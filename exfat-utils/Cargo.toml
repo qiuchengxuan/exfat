@@ -1,0 +1,20 @@
+[package]
+name = "exfat-utils"
+version = "0.1.0"
+authors = ["qiuchengxuan <qiuchengxuan@gmail.com>"]
+edition = "2021"
+repository = "https://github.com/qiuchengxuan/exfat"
+
+[dependencies]
+chrono = "0.4"
+clap = { version = "3", features = ["derive"] }
+exfat = { path = "..", features = ["std", "chrono"] }
+log = { version = "0.4", features = ["release_max_level_off"] }
+pretty-hex = "0.2"
+simple-log = "1.3"
+
+[[bin]]
+name = "exfat"
+path = "src/main.rs"
+test = false
+doc = false
