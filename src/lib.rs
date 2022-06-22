@@ -45,12 +45,12 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         let fat_length = boot_sector.fat_length.to_ne();
 
         io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
-        let clusters = Clusters {
-            fat: FAT::new(sector_size, fat_offset, fat_length),
-            heap_offset: boot_sector.cluster_heap_offset.to_ne(),
-            sectors_per_cluster: boot_sector.sectors_per_cluster(),
+        let clusters = Clusters::new(
+            FAT::new(sector_size, fat_offset, fat_length),
+            boot_sector.cluster_heap_offset.to_ne(),
+            boot_sector.sectors_per_cluster(),
             sector_size,
-        };
+        );
         Ok(Self {
             io,
             serial_number: boot_sector.volumn_serial_number.to_ne(),

@@ -13,13 +13,22 @@ impl From<u32> for ClusterSector {
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Clusters {
-    pub fat: FAT,
-    pub heap_offset: u32,
-    pub sectors_per_cluster: u32,
+    fat: FAT,
+    heap_offset: u32,
+    sectors_per_cluster: u32,
     pub sector_size: usize,
 }
 
 impl Clusters {
+    pub fn new(fat: FAT, heap_offset: u32, sectors_per_cluster: u32, sector_size: usize) -> Self {
+        Self {
+            fat,
+            heap_offset,
+            sectors_per_cluster,
+            sector_size,
+        }
+    }
+
     #[deasync::deasync]
     pub(crate) async fn next<E, IO>(
         &self,

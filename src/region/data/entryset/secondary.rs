@@ -1,12 +1,10 @@
 use core::fmt::Debug;
 
 use super::super::entry_type::RawEntryType;
-use super::generic::Flags;
 use crate::endian::Little as LE;
 
-#[derive(Copy, Clone, Debug)]
 #[repr(C, packed(1))]
-pub struct Secondary<T: Clone + Debug> {
+pub struct Secondary<T> {
     pub(crate) entry_type: RawEntryType,
     general_secondary_flags: u8,
     pub(crate) custom_defined: T,
@@ -14,12 +12,15 @@ pub struct Secondary<T: Clone + Debug> {
     pub(crate) data_length: LE<u64>,
 }
 
-impl<T: Clone + Debug> Secondary<T> {
-    pub(crate) fn general_secondary_flags(&self) -> Flags {
-        Flags(self.general_secondary_flags as u16)
-    }
+impl<T> Secondary<T> {
     pub fn data_length(&self) -> u64 {
         self.data_length.to_ne()
+    }
+}
+
+impl<T: Sized> Clone for Secondary<T> {
+    fn clone(&self) -> Self {
+        unsafe { core::ptr::read(self) }
     }
 }
 

@@ -1,6 +1,4 @@
 use bitfield::bitfield;
-#[cfg(feature = "chrono")]
-use chrono::Duration;
 
 use super::super::entry_type::RawEntryType;
 use crate::endian::Little as LE;

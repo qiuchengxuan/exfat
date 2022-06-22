@@ -6,7 +6,7 @@ pub struct Little<T: Copy + Clone + Default + Debug + PartialEq + PartialOrd + S
 macro_rules! define {
     ($type:ty) => {
         impl Little<$type> {
-            pub fn to_ne(&self) -> $type {
+            pub fn to_ne(self) -> $type {
                 <$type>::from_le(self.0)
             }
         }

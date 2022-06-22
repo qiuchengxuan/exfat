@@ -6,7 +6,7 @@ use alloc::rc::Rc;
 use std::rc::Rc;
 
 use super::clusters::ClusterSector;
-use super::entry::ClusterEntry;
+use super::entry::{ClusterEntry, Offset};
 use super::file::File;
 use super::sectors::Sectors;
 use crate::error::Error;
@@ -15,13 +15,12 @@ use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
 use crate::upcase_table::UpcaseTable;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EntrySet {
     pub name: heapless::String<255>,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub(crate) cluster_sector: ClusterSector,
-    pub(crate) offset: usize,
+    pub(crate) meta_offset: Offset,
 }
 
 pub(crate) struct Entries<IO> {
@@ -123,8 +122,7 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                 name,
                 file_directory,
                 stream_extension,
-                cluster_sector,
-                offset,
+                meta_offset: Offset::new(cluster_sector, offset),
             };
             if let Some(r) = f(&entry_set) {
                 return Ok(Some(r));
@@ -134,20 +132,22 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
 
     pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<IO>, Error<E>> {
         let upcase_table = self.upcase_table.clone();
-        let option = self.find(|entry_set| -> Option<EntrySet> {
+        let future = self.find(|entry_set| -> Option<EntrySet> {
             if !upcase_table.equals(name, entry_set.name.as_str()) {
                 return None;
             }
             Some(entry_set.clone())
-        })?;
-        let entry_set = option.ok_or(Error::NoSuchFileOrDirectory)?;
+        });
+        let entry_set = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
         let stream_extension = &entry_set.stream_extension;
+        let cluster_index = stream_extension.first_cluster.to_ne();
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
             clusters: self.entry.clusters,
-            cluster_index: stream_extension.first_cluster.to_ne(),
+            meta_offset: entry_set.meta_offset,
+            cluster_index,
             length: stream_extension.custom_defined.valid_data_length.to_ne(),
-            size: stream_extension.data_length.to_ne(),
+            capacity: stream_extension.data_length.to_ne(),
         };
         if entry_set.file_directory.file_attributes().directory() > 0 {
             Ok(FileOrDirectory::Directory(Directory {
@@ -155,7 +155,11 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                 upcase_table: self.upcase_table.clone(),
             }))
         } else {
-            Ok(FileOrDirectory::File(File { entry, offset: 0 }))
+            Ok(FileOrDirectory::File(File {
+                entry,
+                cluster_sector: cluster_index.into(),
+                offset: 0,
+            }))
         }
     }
 }

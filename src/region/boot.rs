@@ -41,10 +41,6 @@ impl BootSector {
     pub fn sectors_per_cluster(&self) -> u32 {
         2u32.pow(self.sectors_per_cluster_shift as u32)
     }
-
-    pub fn excess_space_size(&self) -> usize {
-        self.bytes_per_sector() - 512
-    }
 }
 
 #[derive(Default, Debug)]

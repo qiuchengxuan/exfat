@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use super::clusters::Clusters;
 use super::directory::Directory;
-use super::entry::ClusterEntry;
+use super::entry::{ClusterEntry, Offset};
 use crate::endian::Little as LE;
 use crate::error::Error;
 use crate::region;
@@ -58,10 +58,11 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let allocation_bitmap = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
         let entry = ClusterEntry {
             io,
-            cluster_index,
             clusters,
-            length: 4096,
-            size: 4096,
+            meta_offset: Offset::invalid(),
+            cluster_index,
+            length: 0,
+            capacity: 0,
         };
         let directory = Directory {
             entry,
@@ -75,7 +76,7 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         })
     }
 
-    pub fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
+    pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
         let clusters = self.directory.entry.clusters;
