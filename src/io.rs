@@ -32,7 +32,7 @@ pub mod std {
     #[cfg(feature = "async")]
     use async_trait::async_trait;
 
-    #[derive(Clone, Debug)]
+    #[derive(Debug)]
     pub struct FileIO {
         file: Arc<Mutex<File>>,
         sector_size: usize,
@@ -40,10 +40,28 @@ pub mod std {
         buffer: Vec<u8>,
     }
 
+    impl Clone for FileIO {
+        fn clone(&self) -> Self {
+            Self {
+                file: self.file.clone(),
+                sector_size: self.sector_size,
+                sector: None,
+                buffer: vec![0u8; self.sector_size],
+            }
+        }
+    }
+
     #[deasync::deasync]
     impl FileIO {
         pub async fn open<P: AsRef<Path>>(filepath: P) -> std::io::Result<Self> {
-            File::open(filepath).await.map(|file| Self {
+            let mut options = match () {
+                #[cfg(feature = "async")]
+                () => async_std::fs::OpenOptions::new(),
+                #[cfg(not(feature = "async"))]
+                () => File::options(),
+            };
+            let result = options.read(true).write(true).open(filepath).await;
+            result.map(|file| Self {
                 file: Arc::new(Mutex::new(file)),
                 sector_size: 512,
                 sector: None,

@@ -1,6 +1,7 @@
 use super::clusters::ClusterSector;
-use super::entry::ClusterEntry;
+use super::entry::{ClusterEntry, TouchOption};
 use crate::error::Error;
+use crate::region::data::entryset::primary::DateTime;
 
 pub struct File<IO> {
     pub(crate) entry: ClusterEntry<IO>,
@@ -10,6 +11,10 @@ pub struct File<IO> {
 
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> File<IO> {
+    pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
+        self.entry.touch(datetime, option).await
+    }
+
     pub async fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<E>> {
         if buf.len() > self.entry.length as usize {
             buf = &mut buf[..self.entry.length as usize];

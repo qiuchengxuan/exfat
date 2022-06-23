@@ -1,34 +1,36 @@
 use bitfield::bitfield;
+#[cfg(feature = "chrono")]
+use chrono::{Datelike, Timelike};
 
 use super::super::entry_type::RawEntryType;
 use crate::endian::Little as LE;
 
 bitfield! {
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, Default)]
     pub struct Timestamp(u32);
-    _year, _set_year: 31, 25;
+    year_offset, set_year_offset: 31, 25;
     pub month, set_month: 24, 21;
     pub day, set_day: 20, 16;
     pub hour, set_hour: 15, 11;
     pub minute, set_minute: 10, 5;
-    pub double_seconds, set_double_seconds: 4, 0;
+    pub double_second, set_double_second: 4, 0;
 }
 
 impl Timestamp {
     pub fn year(&self) -> u32 {
-        self._year() + 1980
+        self.year_offset() + 1980
     }
 
     pub fn set_year(&mut self, year: u32) {
-        self._set_year(year - 1980)
+        self.set_year_offset(year - 1980)
     }
 
-    pub fn seconds(&self) -> u32 {
-        self.double_seconds() * 2
+    pub fn second(&self) -> u32 {
+        self.double_second() * 2
     }
 
-    pub fn set_seconds(&mut self, seconds: u32) {
-        self.set_double_seconds(seconds / 2)
+    pub fn set_second(&mut self, second: u32) {
+        self.set_double_second(second / 2)
     }
 }
 
@@ -36,8 +38,22 @@ impl Timestamp {
 impl Into<chrono::NaiveDateTime> for Timestamp {
     fn into(self) -> chrono::NaiveDateTime {
         let date = chrono::NaiveDate::from_ymd(self.year() as i32, self.month(), self.day());
-        let time = chrono::NaiveTime::from_hms(self.hour(), self.minute(), self.seconds());
+        let time = chrono::NaiveTime::from_hms(self.hour(), self.minute(), self.second());
         chrono::NaiveDateTime::new(date, time)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl From<chrono::NaiveDateTime> for Timestamp {
+    fn from(datetime: chrono::NaiveDateTime) -> Self {
+        let mut timestamp = Self::default();
+        timestamp.set_year(datetime.year() as u32);
+        timestamp.set_month(datetime.month());
+        timestamp.set_day(datetime.day());
+        timestamp.set_hour(datetime.hour());
+        timestamp.set_minute(datetime.minute());
+        timestamp.set_second(datetime.second());
+        timestamp
     }
 }
 
@@ -46,7 +62,7 @@ impl Timestamp {
     fn chrono_with_millis(&self, millis: u32) -> chrono::NaiveDateTime {
         let date = chrono::NaiveDate::from_ymd(self.year() as i32, self.month(), self.day());
         let time =
-            chrono::NaiveTime::from_hms_milli(self.hour(), self.minute(), self.seconds(), millis);
+            chrono::NaiveTime::from_hms_milli(self.hour(), self.minute(), self.second(), millis);
         chrono::NaiveDateTime::new(date, time)
     }
 }
@@ -65,17 +81,14 @@ bitfield! {
 pub struct UTCOffset(u8);
 
 impl UTCOffset {
-    pub fn get(&self) -> Option<u8> {
-        match self.0 & 0x80 > 0 {
-            true => Some(self.0 & 0x7F),
-            false => None,
-        }
+    pub fn new(minutes: i16) -> Self {
+        Self((minutes / 15) as u8 | 0x80)
     }
 
-    pub fn set(&mut self, offset: Option<u8>) {
-        match offset {
-            Some(offset) => self.0 = offset | 0x80,
-            None => self.0 = 0,
+    pub fn minutes(&self) -> i16 {
+        match self.0 & 0x80 > 0 {
+            true => (((self.0 & 0x7F) << 1) as i8 >> 1) as i16 * 15,
+            false => 0,
         }
     }
 }
@@ -83,7 +96,38 @@ impl UTCOffset {
 #[cfg(feature = "chrono")]
 impl Into<chrono::FixedOffset> for UTCOffset {
     fn into(self) -> chrono::FixedOffset {
-        chrono::FixedOffset::east(self.get().unwrap_or_default() as i32 * 15 * 60)
+        chrono::FixedOffset::east(self.minutes() as i32 * 60)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DateTime {
+    pub timestamp: Timestamp,
+    pub millisecond: u16,
+    pub utc_offset: UTCOffset,
+}
+
+#[cfg(feature = "chrono")]
+impl Into<chrono::DateTime<chrono::FixedOffset>> for DateTime {
+    fn into(self) -> chrono::DateTime<chrono::FixedOffset> {
+        let datetime = self.timestamp.chrono_with_millis(self.millisecond as u32);
+        chrono::DateTime::from_utc(datetime, self.utc_offset.into())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl<TZ: chrono::Offset + chrono::TimeZone> From<chrono::DateTime<TZ>> for DateTime {
+    fn from(datetime: chrono::DateTime<TZ>) -> Self {
+        let offset = datetime.timezone().fix();
+        let seconds = offset.local_minus_utc();
+        let utc_offset = UTCOffset::new((seconds / 60) as i16);
+        let naive = datetime.naive_utc();
+        let millisecond = naive.timestamp_subsec_millis() as u16;
+        Self {
+            timestamp: naive.into(),
+            millisecond,
+            utc_offset,
+        }
     }
 }
 
@@ -111,38 +155,38 @@ impl FileDirectory {
         FileAttributes(self.file_attributes.to_ne())
     }
 
-    pub fn create_timestamp(&self) -> Timestamp {
-        Timestamp(self.create_timestamp.to_ne())
+    pub fn create_timestamp(&self) -> DateTime {
+        DateTime {
+            timestamp: Timestamp(self.create_timestamp.to_ne()),
+            millisecond: self.create_10ms_increment as u16 * 10,
+            utc_offset: self.create_utc_offset,
+        }
     }
 
-    pub fn last_modified_timestamp(&self) -> Timestamp {
-        Timestamp(self.last_modified_timestamp.to_ne())
+    pub fn last_modified_timestamp(&self) -> DateTime {
+        DateTime {
+            timestamp: Timestamp(self.last_modified_timestamp.to_ne()),
+            millisecond: self.last_modified_10ms_increment as u16 * 10,
+            utc_offset: self.last_modified_utc_offset,
+        }
     }
 
-    pub fn last_accessed_timestamp(&self) -> Timestamp {
-        Timestamp(self.last_accessed_timestamp.to_ne())
-    }
-}
-
-#[cfg(feature = "chrono")]
-impl FileDirectory {
-    pub fn chrono_create_timestamp(&self) -> chrono::DateTime<chrono::FixedOffset> {
-        let timestamp = Timestamp(self.create_timestamp.to_ne());
-        let datetime: chrono::NaiveDateTime =
-            timestamp.chrono_with_millis(self.create_10ms_increment as u32 * 10);
-        chrono::DateTime::from_utc(datetime, self.create_utc_offset.into())
+    pub(crate) fn update_last_modified_timestamp(&mut self, datetime: DateTime) {
+        self.last_modified_timestamp = datetime.timestamp.0.into();
+        self.last_modified_10ms_increment = (datetime.millisecond / 10) as u8;
+        self.last_modified_utc_offset = datetime.utc_offset;
     }
 
-    pub fn chrono_last_modified_timestamp(&self) -> chrono::DateTime<chrono::FixedOffset> {
-        let timestamp = Timestamp(self.last_modified_timestamp.to_ne());
-        let datetime: chrono::NaiveDateTime =
-            timestamp.chrono_with_millis(self.last_modified_10ms_increment as u32 * 10);
-        chrono::DateTime::from_utc(datetime, self.last_modified_utc_offset.into())
+    pub fn last_accessed_timestamp(&self) -> DateTime {
+        DateTime {
+            timestamp: Timestamp(self.last_accessed_timestamp.to_ne()),
+            millisecond: 0,
+            utc_offset: self.last_accessed_utc_offset,
+        }
     }
 
-    pub fn chrono_last_accessed_timestamp(&self) -> chrono::DateTime<chrono::FixedOffset> {
-        let timestamp = Timestamp(self.last_accessed_timestamp.to_ne());
-        let datetime: chrono::NaiveDateTime = timestamp.into();
-        chrono::DateTime::from_utc(datetime, self.last_accessed_utc_offset.into())
+    pub(crate) fn update_last_accessed_timestamp(&mut self, datetime: DateTime) {
+        self.last_accessed_timestamp = datetime.timestamp.0.into();
+        self.last_accessed_utc_offset = datetime.utc_offset;
     }
 }

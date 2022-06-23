@@ -6,13 +6,14 @@ use alloc::rc::Rc;
 use std::rc::Rc;
 
 use super::clusters::ClusterSector;
-use super::entry::{ClusterEntry, Offset};
+use super::entry::{ClusterEntry, Offset, TouchOption};
 use super::file::File;
 use super::sectors::Sectors;
 use crate::error::Error;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
-use crate::region::data::entryset::primary::FileDirectory;
+use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
+use crate::region::data::entryset::ENTRY_SIZE;
 use crate::upcase_table::UpcaseTable;
 
 #[derive(Clone)]
@@ -31,20 +32,20 @@ pub(crate) struct Entries<IO> {
 
 impl<E, IO: crate::io::IO<Error = E>> Entries<IO> {
     #[deasync::deasync]
-    pub(crate) async fn next(&mut self) -> Result<&[u8; 32], Error<E>> {
+    pub(crate) async fn next(&mut self) -> Result<&[u8; ENTRY_SIZE], Error<E>> {
         let sector = if self.cursor < self.sector_size {
-            self.cursor += 32;
+            self.cursor += ENTRY_SIZE;
             self.sectors.current().await?
         } else {
-            self.cursor = 32;
+            self.cursor = ENTRY_SIZE;
             self.sectors.next().await?
         };
-        let entry = &sector[self.cursor - 32..self.cursor];
+        let entry = &sector[self.cursor - ENTRY_SIZE..self.cursor];
         entry.try_into().map_err(|_| Error::EOF)
     }
 
     pub(crate) fn offset(&self) -> (ClusterSector, usize) {
-        (self.sectors.cluster_sector, self.cursor)
+        (self.sectors.cluster_sector, self.cursor - ENTRY_SIZE)
     }
 }
 
@@ -77,7 +78,6 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
     {
         let mut entries = self.entries();
         loop {
-            let (cluster_sector, offset) = entries.offset();
             let chunk = *entries.next().await?;
             let entry_type = RawEntryType::new(chunk[0]);
             if entry_type.is_end_of_directory() {
@@ -86,6 +86,7 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
             if !entry_type.in_use() {
                 continue;
             }
+            let (cluster_sector, offset) = entries.offset();
             let file_directory: FileDirectory = match entry_type.entry_type() {
                 Ok(EntryType::FileDirectory) => unsafe { mem::transmute(chunk) },
                 _ => continue,
@@ -128,6 +129,10 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                 return Ok(Some(r));
             }
         }
+    }
+
+    pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
+        self.entry.touch(datetime, option).await
     }
 
     pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<IO>, Error<E>> {

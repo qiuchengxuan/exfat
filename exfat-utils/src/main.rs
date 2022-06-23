@@ -1,5 +1,6 @@
 mod cat;
 mod list;
+mod touch;
 
 use clap::Parser;
 
@@ -20,12 +21,22 @@ struct Cat {
     path: String,
 }
 
+#[derive(Debug, clap::Args)]
+struct Touch {
+    /// Block device or file that formatted with ExFAT
+    device: String,
+    /// Specify path to touch
+    path: String,
+}
+
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     /// List file and directory in specified path
     List(List),
     /// Concatenate file and print on the standard output
     Cat(Cat),
+    /// Change file timestamps
+    Touch(Touch),
 }
 
 #[derive(Parser, Debug)]
@@ -42,6 +53,7 @@ fn main() {
     let result = match args.action {
         Action::List(args) => list::list(args.device, args.path),
         Action::Cat(args) => cat::cat(args.device, args.path),
+        Action::Touch(args) => touch::touch(args.device, args.path),
     };
     if let Some(error) = result.err() {
         eprintln!("{}", error);
