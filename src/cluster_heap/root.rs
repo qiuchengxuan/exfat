@@ -7,11 +7,12 @@ use std::rc::Rc;
 
 use super::clusters::Clusters;
 use super::directory::Directory;
-use super::entry::{ClusterEntry, Offset};
+use super::entry::{ClusterEntry, EntryIndex};
 use crate::endian::Little as LE;
 use crate::error::Error;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
+use crate::region::data::entryset::RawEntry;
 
 pub struct RootDirectory<IO> {
     directory: Directory<IO>,
@@ -32,9 +33,9 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
         let sector_index = clusters.sector_index(cluster_index.into());
         let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
-        for chunk in sector.chunks(32) {
-            let entry: &[u8; 32] = chunk.try_into().map_err(|_| Error::EOF)?;
-            match RawEntryType::new(chunk[0]).entry_type() {
+        let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
+        for entry in entries.iter() {
+            match RawEntryType::new(entry[0]).entry_type() {
                 Ok(EntryType::AllocationBitmap) => {
                     let bitmap: &region::data::AllocationBitmap = unsafe { mem::transmute(entry) };
                     allocation_bitmap = Some(*bitmap)
@@ -52,14 +53,13 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         }
         let upcase_table = upcase_table.ok_or(Error::UpcaseTableMissing)?;
         let sector_index = clusters.sector_index(upcase_table.first_cluster.to_ne().into());
-        let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
-        let array: &[u8; 256] = sector[..256].try_into().map_err(|_| Error::EOF)?;
-        let array: &[LE<u16>; 128] = unsafe { mem::transmute(array) };
         let allocation_bitmap = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
+        let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
+        let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let entry = ClusterEntry {
             io,
             clusters,
-            meta_offset: Offset::invalid(),
+            meta_entry: EntryIndex::invalid(),
             cluster_index,
             length: 0,
             capacity: 0,
@@ -83,16 +83,16 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let first_sector = clusters.sector_index(first_cluster.into());
         let data_length = self.upcase_table.data_length.to_ne();
         let num_sectors = data_length / clusters.sector_size as u64;
+        let io = &mut self.directory.entry.io;
         for i in 0..num_sectors {
-            let future = self.directory.entry.io.read(first_sector + i);
-            let sector = future.await.map_err(|e| Error::IO(e))?;
-            checksum.write(sector);
+            let sector = io.read(first_sector + i).await.map_err(|e| Error::IO(e))?;
+            checksum.write(crate::io::flatten(sector));
         }
         let remain = (data_length - num_sectors * clusters.sector_size as u64) as usize;
         if remain > 0 {
-            let future = self.directory.entry.io.read(first_sector + num_sectors);
-            let sector = future.await.map_err(|e| Error::IO(e))?;
-            checksum.write(&sector[..remain]);
+            let sector_index = first_sector + num_sectors;
+            let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
+            checksum.write(&crate::io::flatten(sector)[..remain]);
         }
         if checksum.sum() != self.upcase_table.table_checksum.to_ne() {
             return Err(Error::UpcaseTableChecksum);

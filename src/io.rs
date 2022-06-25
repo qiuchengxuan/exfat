@@ -4,13 +4,19 @@ use alloc::boxed::Box;
 #[cfg(feature = "async")]
 use async_trait::async_trait;
 
+pub type LogicalSector = [u8; 512];
+
+pub(crate) fn flatten(sector: &[LogicalSector]) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(&sector[0][0], sector.len() * 512) }
+}
+
 #[cfg_attr(feature = "async", async_trait)]
 #[deasync::deasync]
 pub trait IO: Clone {
     type Error;
     /// Default to 512
     fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
-    async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [u8], Self::Error>;
+    async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [LogicalSector], Self::Error>;
     async fn write(&mut self, sector: u64, offset: usize, buf: &[u8]) -> Result<(), Self::Error>;
 }
 
@@ -37,7 +43,7 @@ pub mod std {
         file: Arc<Mutex<File>>,
         sector_size: usize,
         sector: Option<u64>,
-        buffer: Vec<u8>,
+        buffer: Vec<[u8; 512]>,
     }
 
     impl Clone for FileIO {
@@ -46,7 +52,7 @@ pub mod std {
                 file: self.file.clone(),
                 sector_size: self.sector_size,
                 sector: None,
-                buffer: vec![0u8; self.sector_size],
+                buffer: vec![[0u8; 512]; self.sector_size / 512],
             }
         }
     }
@@ -65,7 +71,7 @@ pub mod std {
                 file: Arc::new(Mutex::new(file)),
                 sector_size: 512,
                 sector: None,
-                buffer: vec![0u8; 512],
+                buffer: vec![[0u8; 512]; 1],
             })
         }
     }
@@ -78,11 +84,11 @@ pub mod std {
         fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error> {
             self.sector_size = size;
             self.sector = None;
-            self.buffer = vec![0u8; size];
+            self.buffer = vec![[0u8; 512]; size / 512];
             Ok(())
         }
 
-        async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [u8], Self::Error> {
+        async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [[u8; 512]], Self::Error> {
             if self.sector == Some(sector) {
                 return Ok(self.buffer.as_ref());
             }
@@ -96,9 +102,13 @@ pub mod std {
             };
             file.seek(seek).await?;
             self.sector = Some(sector);
-            file.read_exact(self.buffer.as_mut())
-                .await
-                .map(|_| self.buffer.as_ref())
+            for buf in self.buffer.iter_mut() {
+                match file.read_exact(buf).await {
+                    Ok(_) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(self.buffer.as_ref())
         }
 
         async fn write(

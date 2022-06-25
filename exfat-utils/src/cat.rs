@@ -1,4 +1,5 @@
 use std::io;
+use std::io::Write;
 
 use exfat::error::Error;
 use exfat::io::std::FileIO;
@@ -15,11 +16,14 @@ pub fn cat(device: String, path: String) -> Result<(), Error<io::Error>> {
         FileOrDirectory::File(f) => f,
         _ => return Err(Error::NoSuchFileOrDirectory),
     };
+    let mut stdout = io::stdout();
     let mut buf = [0u8; 512];
-    let size = file.read(&mut buf)?;
-    match std::str::from_utf8(&buf[..size]) {
-        Ok(text) => print!("{}", text),
-        Err(_) => eprintln!("Not UTF-8 printable"),
-    };
+    loop {
+        let size = file.read(&mut buf)?;
+        stdout.write_all(&buf[..size]).unwrap();
+        if size < buf.len() {
+            break;
+        }
+    }
     Ok(())
 }

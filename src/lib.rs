@@ -34,9 +34,8 @@ pub struct ExFAT<IO> {
 #[deasync::deasync]
 impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
     pub async fn new(mut io: IO) -> Result<Self, Error<E>> {
-        let bytes = io.read(0).await.map_err(|e| Error::IO(e))?;
-        let sector: &[u8; 512] = bytes.try_into().map_err(|_| Error::EOF)?;
-        let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(sector) };
+        let blocks = io.read(0).await.map_err(|e| Error::IO(e))?;
+        let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         if !boot_sector.is_exfat() {
             return Err(Error::NotExFAT);
         }
@@ -62,12 +61,14 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
     pub async fn validate_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::boot::BootChecksum::default();
         for i in 0..=10 {
-            let bytes = self.io.read(i as u64).await.map_err(|e| Error::IO(e))?;
-            checksum.write(i, bytes);
+            let sector = self.io.read(i as u64).await.map_err(|e| Error::IO(e))?;
+            for block in sector.iter() {
+                checksum.write(i, block);
+            }
         }
-        let bytes = self.io.read(11).await.map_err(|e| Error::IO(e))?;
-        let bytes: &[u8; 4] = &bytes[..4].try_into().map_err(|_| Error::EOF)?;
-        if u32::from_le_bytes(*bytes) != checksum.sum() {
+        let sector = self.io.read(11).await.map_err(|e| Error::IO(e))?;
+        let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[0]) };
+        if u32::from_le(array[0]) != checksum.sum() {
             return Err(Error::Checksum);
         }
         Ok(())

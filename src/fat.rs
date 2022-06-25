@@ -33,10 +33,7 @@ impl FAT {
         let sector_index = (self.offset + index) as u64;
         let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
         let offset = (cluster_index as usize + 2) % (self.sector_size / 4);
-        let bytes: &[u8; 4] = match sector.chunks(4).nth(offset) {
-            Some(bytes) => bytes.try_into().map_err(|_| Error::EOF)?,
-            None => return Err(Error::EOF),
-        };
-        Ok(Entry::try_from(u32::from_le_bytes(*bytes)).map_err(|_| Error::BadFAT)?)
+        let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[offset / 128]) };
+        Entry::try_from(u32::from_le(array[offset % 128])).map_err(|_| Error::BadFAT)
     }
 }

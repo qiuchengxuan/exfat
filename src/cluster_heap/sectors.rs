@@ -17,13 +17,13 @@ impl<E, IO: crate::io::IO<Error = E>> Sectors<IO> {
     }
 
     #[deasync::deasync]
-    pub async fn current(&mut self) -> Result<&[u8], Error<E>> {
+    pub async fn current(&mut self) -> Result<&[[u8; 512]], Error<E>> {
         let sector_index = self.clusters.sector_index(self.cluster_sector);
         self.io.read(sector_index).await.map_err(|e| Error::IO(e))
     }
 
     #[deasync::deasync]
-    pub async fn next(&mut self) -> Result<&[u8], Error<E>> {
+    pub async fn next(&mut self) -> Result<&[[u8; 512]], Error<E>> {
         self.cluster_sector = self
             .clusters
             .next(&mut self.io, self.cluster_sector)

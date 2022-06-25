@@ -24,24 +24,27 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
         let io = &mut self.entry.io;
         let sector_remain = self.entry.clusters.sector_size - offset;
         let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
+        let bytes = crate::io::flatten(sector);
         if buf.len() <= sector_remain {
-            buf.copy_from_slice(&sector[offset..offset + buf.len()]);
+            buf.copy_from_slice(&bytes[offset..offset + buf.len()]);
             if buf.len() == sector_remain {
                 self.cluster_sector = self.entry.clusters.next(io, self.cluster_sector).await?;
             }
             return Ok(buf.len());
         }
-        buf[..sector_remain].copy_from_slice(&sector[offset..]);
+        buf[..sector_remain].copy_from_slice(&bytes[offset..]);
         let mut remain = &mut buf[sector_remain..];
         self.cluster_sector = self.entry.clusters.next(io, self.cluster_sector).await?;
         for _ in 0..remain.len() / self.entry.clusters.sector_size {
             let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
-            remain[..self.entry.clusters.sector_size].copy_from_slice(sector);
+            let bytes = crate::io::flatten(sector);
+            remain[..self.entry.clusters.sector_size].copy_from_slice(bytes);
             self.cluster_sector = self.entry.clusters.next(io, self.cluster_sector).await?;
             remain = &mut remain[self.entry.clusters.sector_size..];
         }
         let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
-        remain.copy_from_slice(&sector[..remain.len()]);
+        let bytes = crate::io::flatten(sector);
+        remain.copy_from_slice(&bytes[..remain.len()]);
         Ok(buf.len())
     }
 }
