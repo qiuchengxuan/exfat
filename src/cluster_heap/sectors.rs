@@ -1,34 +1,29 @@
-use super::clusters::{ClusterSector, Clusters};
+use super::clusters::{ClusterSector, MetaClusterSector};
 use crate::error::Error;
+use crate::io::IOWrapper;
 
 pub(crate) struct Sectors<IO> {
-    io: IO,
-    clusters: Clusters,
-    pub cluster_sector: ClusterSector,
+    io: IOWrapper<IO>,
+    cluster_sector: ClusterSector<IO>,
 }
 
 impl<E, IO: crate::io::IO<Error = E>> Sectors<IO> {
-    pub fn new(io: IO, cluster_index: u32, clusters: Clusters) -> Self {
-        Self {
-            io,
-            clusters,
-            cluster_sector: cluster_index.into(),
-        }
+    pub fn new(io: IOWrapper<IO>, cluster_sector: ClusterSector<IO>) -> Self {
+        Self { io, cluster_sector }
+    }
+
+    pub fn cluster_sector(&self) -> MetaClusterSector {
+        self.cluster_sector.meta()
     }
 
     #[deasync::deasync]
     pub async fn current(&mut self) -> Result<&[[u8; 512]], Error<E>> {
-        let sector_index = self.clusters.sector_index(self.cluster_sector);
-        self.io.read(sector_index).await.map_err(|e| Error::IO(e))
+        self.io.read(self.cluster_sector.sector_index()).await
     }
 
     #[deasync::deasync]
     pub async fn next(&mut self) -> Result<&[[u8; 512]], Error<E>> {
-        self.cluster_sector = self
-            .clusters
-            .next(&mut self.io, self.cluster_sector)
-            .await?;
-        let sector_index = self.clusters.sector_index(self.cluster_sector);
-        self.io.read(sector_index).await.map_err(|e| Error::IO(e))
+        let sector_index = self.cluster_sector.next_sector_index().await?;
+        self.io.read(sector_index).await
     }
 }

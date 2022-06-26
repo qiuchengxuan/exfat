@@ -4,6 +4,8 @@ use alloc::boxed::Box;
 #[cfg(feature = "async")]
 use async_trait::async_trait;
 
+use crate::error::Error;
+
 pub type LogicalSector = [u8; 512];
 
 pub(crate) fn flatten(sector: &[LogicalSector]) -> &[u8] {
@@ -18,6 +20,30 @@ pub trait IO: Clone {
     fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
     async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [LogicalSector], Self::Error>;
     async fn write(&mut self, sector: u64, offset: usize, buf: &[u8]) -> Result<(), Self::Error>;
+}
+
+#[derive(Clone)]
+pub(crate) struct IOWrapper<IO>(IO);
+
+#[deasync::deasync]
+impl<E, IO: crate::io::IO<Error = E>> IOWrapper<IO> {
+    pub(crate) fn new(io: IO) -> Self {
+        Self(io)
+    }
+
+    pub(crate) async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [[u8; 512]], Error<E>> {
+        self.0.read(sector).await.map_err(|e| Error::IO(e))
+    }
+
+    pub(crate) async fn write(
+        &mut self,
+        sector: u64,
+        offset: usize,
+        buf: &[u8],
+    ) -> Result<(), Error<E>> {
+        let result = self.0.write(sector, offset, buf).await;
+        result.map_err(|e| Error::IO(e))
+    }
 }
 
 #[cfg(feature = "std")]
