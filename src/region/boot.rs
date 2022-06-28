@@ -2,6 +2,8 @@
 
 use crate::endian::Little as LE;
 
+pub const MAX_SECTOR_SIZE: usize = 4096;
+
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub(crate) struct BootSector {

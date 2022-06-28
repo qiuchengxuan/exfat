@@ -57,19 +57,22 @@ pub mod std {
         fs::File,
         io::prelude::*,
         io::SeekFrom,
+        mem::MaybeUninit,
         path::Path,
+        slice::from_raw_parts,
         sync::{Arc, Mutex},
     };
 
     #[cfg(feature = "async")]
     use async_trait::async_trait;
 
+    use crate::region::boot::MAX_SECTOR_SIZE;
+
     #[derive(Debug)]
     pub struct FileIO {
         file: Arc<Mutex<File>>,
         sector_size: usize,
-        sector: Option<u64>,
-        buffer: Vec<[u8; 512]>,
+        buffer: MaybeUninit<[u8; MAX_SECTOR_SIZE]>,
     }
 
     impl Clone for FileIO {
@@ -77,8 +80,7 @@ pub mod std {
             Self {
                 file: self.file.clone(),
                 sector_size: self.sector_size,
-                sector: None,
-                buffer: vec![[0u8; 512]; self.sector_size / 512],
+                buffer: MaybeUninit::uninit(),
             }
         }
     }
@@ -96,8 +98,7 @@ pub mod std {
             result.map(|file| Self {
                 file: Arc::new(Mutex::new(file)),
                 sector_size: 512,
-                sector: None,
-                buffer: vec![[0u8; 512]; 1],
+                buffer: MaybeUninit::uninit(),
             })
         }
     }
@@ -109,15 +110,10 @@ pub mod std {
 
         fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error> {
             self.sector_size = size;
-            self.sector = None;
-            self.buffer = vec![[0u8; 512]; size / 512];
             Ok(())
         }
 
         async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [[u8; 512]], Self::Error> {
-            if self.sector == Some(sector) {
-                return Ok(self.buffer.as_ref());
-            }
             let seek = SeekFrom::Start(sector * self.sector_size as u64);
 
             let mut file = match () {
@@ -127,14 +123,10 @@ pub mod std {
                 () => self.file.lock().await,
             };
             file.seek(seek).await?;
-            self.sector = Some(sector);
-            for buf in self.buffer.iter_mut() {
-                match file.read_exact(buf).await {
-                    Ok(_) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(self.buffer.as_ref())
+            let buffer = unsafe { self.buffer.assume_init_mut() };
+            file.read_exact(&mut buffer[..self.sector_size]).await?;
+
+            Ok(unsafe { from_raw_parts(buffer.as_ptr() as *const _, self.sector_size / 512) })
         }
 
         async fn write(
@@ -143,9 +135,6 @@ pub mod std {
             offset: usize,
             buf: &[u8],
         ) -> Result<(), Self::Error> {
-            if self.sector == Some(sector) {
-                self.sector = None;
-            }
             let mut file = match () {
                 #[cfg(not(feature = "async"))]
                 () => self.file.lock().unwrap(),

@@ -3,8 +3,9 @@ use core::fmt::Debug;
 use super::super::entry_type::RawEntryType;
 use crate::endian::Little as LE;
 
+#[derive(Default)]
 #[repr(C, packed(1))]
-pub struct Secondary<T> {
+pub struct Secondary<T: Default> {
     pub(crate) entry_type: RawEntryType,
     general_secondary_flags: u8,
     pub(crate) custom_defined: T,
@@ -12,19 +13,19 @@ pub struct Secondary<T> {
     pub(crate) data_length: LE<u64>,
 }
 
-impl<T> Secondary<T> {
+impl<T: Default> Secondary<T> {
     pub fn data_length(&self) -> u64 {
         self.data_length.to_ne()
     }
 }
 
-impl<T: Sized> Clone for Secondary<T> {
+impl<T: Sized + Default> Clone for Secondary<T> {
     fn clone(&self) -> Self {
         unsafe { core::ptr::read(self) }
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 #[repr(C, packed(1))]
 pub struct StreamExtension {
     _reserved1: u8,
