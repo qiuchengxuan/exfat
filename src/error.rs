@@ -5,8 +5,6 @@ pub enum Error<E> {
     NotExFAT,
     Checksum,
     EOF,
-    // FAT
-    BadFAT,
     // FileDirectory
     UpcaseTableMissing,
     UpcaseTableChecksum,
@@ -21,7 +19,6 @@ impl<E: Display> Display for Error<E> {
             Self::NotExFAT => write!(f, "Not ExFAT filesystem"),
             Self::Checksum => write!(f, "Checksum mismatch"),
             Self::EOF => write!(f, "End of file"),
-            Self::BadFAT => write!(f, "Bad FAT"),
             Self::UpcaseTableMissing => write!(f, "Upcase table missing"),
             Self::UpcaseTableChecksum => write!(f, "Upcase table checksum mismatch"),
             Self::AllocationBitmapMissing => write!(f, "Allocation bitmap missing"),

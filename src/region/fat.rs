@@ -1,6 +1,7 @@
 pub(crate) const FAT_ENTRY0: u32 = 0xF8FFFFFF;
 pub(crate) const FAT_ENTRY1: u32 = 0xFFFFFFFF;
 
+#[derive(Copy, Clone, Debug)]
 pub(crate) enum Entry {
     Next(u32),
     BadCluster,

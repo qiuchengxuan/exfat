@@ -6,7 +6,7 @@ use alloc::rc::Rc;
 #[cfg(feature = "std")]
 use std::rc::Rc;
 
-use super::clusters::MetaClusterSector;
+use super::clusters::ClusterSector;
 use super::entry::{ClusterEntry, TouchOption};
 use super::file::File;
 use crate::error::Error;
@@ -21,7 +21,7 @@ pub struct EntrySet {
     pub name: heapless::String<255>,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub(crate) cluster_sector: MetaClusterSector,
+    pub(crate) cluster_sector: ClusterSector,
     pub(crate) entry_index: usize,
 }
 
@@ -41,12 +41,12 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
     where
         H: Fn(&EntrySet) -> Option<R>,
     {
-        let mut cluster_sector = self.entry.cluster_sector.clone();
+        let mut cluster_sector = self.entry.cluster_sector;
         let mut entry_set = EntrySet {
             name: heapless::String::<255>::new(),
             file_directory: Default::default(),
             stream_extension: Default::default(),
-            cluster_sector: cluster_sector.meta(),
+            cluster_sector,
             entry_index: 0,
         };
         let mut name_length: u8 = 0;
@@ -93,9 +93,9 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                     _ => continue,
                 }
             }
-            let sector_index = cluster_sector.next_sector_index().await?;
-            sector = self.entry.io.read(sector_index).await?;
-            entry_set.cluster_sector = cluster_sector.meta();
+            self.entry.next_cluster(&mut cluster_sector).await?;
+            sector = self.entry.io.read(cluster_sector.sector_index()).await?;
+            entry_set.cluster_sector = cluster_sector;
         }
     }
 
@@ -114,12 +114,13 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         let entry_set = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
         let stream_extension = &entry_set.stream_extension;
         let cluster_index = stream_extension.first_cluster.to_ne();
-        let cluster_sector = self.entry.cluster_sector.with(cluster_index, 0);
+        let cluster_sector = self.entry.cluster_sector.new_cluster(cluster_index);
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
+            fat: self.entry.fat,
             meta: entry_set.cluster_sector,
             entry_index: entry_set.entry_index,
-            cluster_sector: cluster_sector.clone(),
+            cluster_sector,
             sector_size: self.entry.sector_size,
             length: stream_extension.custom_defined.valid_data_length.to_ne(),
             capacity: stream_extension.data_length.to_ne(),

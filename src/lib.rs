@@ -17,7 +17,7 @@ mod upcase_table;
 
 use core::mem;
 
-use cluster_heap::clusters::{ClusterSector, MetaClusterSector};
+use cluster_heap::clusters::ClusterSector;
 use cluster_heap::root::RootDirectory as RootDir;
 use error::Error;
 use fat::FAT;
@@ -27,7 +27,8 @@ pub use cluster_heap::directory::FileOrDirectory;
 pub struct ExFAT<IO> {
     io: IO,
     serial_number: u32,
-    cluster_sector: ClusterSector<IO>,
+    fat: FAT,
+    cluster_sector: ClusterSector,
 }
 
 #[deasync::deasync]
@@ -43,17 +44,17 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         let fat_length = boot_sector.fat_length.to_ne();
 
         io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
-        let meta = MetaClusterSector {
+        let cluster_sector = ClusterSector {
             heap_offset: boot_sector.cluster_heap_offset.to_ne(),
             sectors_per_cluster: boot_sector.sectors_per_cluster(),
             cluster_index: boot_sector.first_cluster_of_root_directory.to_ne(),
-            ..Default::default()
+            sector_index: 0,
         };
-        let fat = FAT::new(io.clone(), sector_size, fat_offset, fat_length);
-        let cluster_sector = ClusterSector::new(meta, fat);
+        let fat = FAT::new(sector_size, fat_offset, fat_length);
         Ok(Self {
             io,
             serial_number: boot_sector.volumn_serial_number.to_ne(),
+            fat,
             cluster_sector,
         })
     }
@@ -80,7 +81,7 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
 
     pub async fn root_directory<'a>(&'a mut self) -> Result<RootDir<IO>, Error<E>> {
         let io = self.io.clone();
-        RootDir::open(io, self.cluster_sector.clone()).await
+        RootDir::open(io, self.fat, self.cluster_sector).await
     }
 }
 

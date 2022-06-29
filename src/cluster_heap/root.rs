@@ -10,6 +10,7 @@ use super::directory::Directory;
 use super::entry::ClusterEntry;
 use crate::endian::Little as LE;
 use crate::error::Error;
+use crate::fat::FAT;
 use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
@@ -26,7 +27,8 @@ pub struct RootDirectory<IO> {
 impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
     pub(crate) async fn open(
         mut io: IO,
-        mut cluster_sector: ClusterSector<IO>,
+        fat: FAT,
+        cluster_sector: ClusterSector,
     ) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<11>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
@@ -54,13 +56,14 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let upcase_table = upcase_table.ok_or(Error::UpcaseTableMissing)?;
         let allocation_bitmap = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
         let cluster_index = upcase_table.first_cluster.to_ne();
-        let sector_index = cluster_sector.with(cluster_index, 0).sector_index();
+        let sector_index = cluster_sector.new_cluster(cluster_index).sector_index();
         let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
         let sector_size = sector.len() * 512;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let directory = Directory {
             entry: ClusterEntry {
                 io: IOWrapper::new(io),
+                fat,
                 meta: Default::default(),
                 entry_index: 0,
                 cluster_sector,
@@ -81,8 +84,8 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
-        let cluster_sector = self.directory.entry.cluster_sector.with(first_cluster, 0);
-        let first_sector = cluster_sector.sector_index();
+        let cluster_sector = &self.directory.entry.cluster_sector;
+        let first_sector = cluster_sector.new_cluster(first_cluster).sector_index();
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = self.directory.entry.sector_size;
         let num_sectors = data_length / sector_size as u64;
