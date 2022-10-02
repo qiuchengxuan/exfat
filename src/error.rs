@@ -5,6 +5,8 @@ pub enum Error<E> {
     NotExFAT,
     Checksum,
     EOF,
+    // FAT
+    TexFATNotSupported,
     // FileDirectory
     UpcaseTableMissing,
     UpcaseTableChecksum,
@@ -17,6 +19,7 @@ impl<E: Display> Display for Error<E> {
         match self {
             Self::IO(e) => write!(f, "IO({})", e),
             Self::NotExFAT => write!(f, "Not ExFAT filesystem"),
+            Self::TexFATNotSupported => write!(f, "TexFAT not supported"),
             Self::Checksum => write!(f, "Checksum mismatch"),
             Self::EOF => write!(f, "End of file"),
             Self::UpcaseTableMissing => write!(f, "Upcase table missing"),

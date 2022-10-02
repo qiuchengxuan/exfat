@@ -17,7 +17,7 @@ impl FAT {
         }
     }
 
-    pub fn sector_index(&self, cluster_index: u32) -> Option<u32> {
+    pub fn sector(&self, cluster_index: u32) -> Option<u32> {
         let index = (cluster_index + 2) / (self.sector_size as u32 / 4);
         if index >= self.length {
             return None;

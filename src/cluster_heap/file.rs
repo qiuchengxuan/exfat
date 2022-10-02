@@ -1,11 +1,11 @@
-use super::clusters::ClusterSector;
+use super::clusters::SectorIndex;
 use super::entry::{ClusterEntry, TouchOption};
 use crate::error::Error;
 use crate::region::data::entryset::primary::DateTime;
 
 pub struct File<IO> {
     pub(crate) entry: ClusterEntry<IO>,
-    pub(crate) cluster_sector: ClusterSector,
+    pub(crate) sector_index: SectorIndex,
     pub(crate) offset: u64,
 }
 
@@ -20,25 +20,25 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
             buf = &mut buf[..self.entry.length as usize];
         }
         let offset = self.offset as usize % self.entry.sector_size;
-        let sector_index = self.cluster_sector.sector_index();
+        let sector_index = self.sector_index.sector();
         let sector_remain = self.entry.sector_size - offset;
         let sector = self.entry.io.read(sector_index).await?;
         let bytes = crate::io::flatten(sector);
         if buf.len() <= sector_remain {
             buf.copy_from_slice(&bytes[offset..offset + buf.len()]);
             if buf.len() == sector_remain {
-                self.entry.next_cluster(&mut self.cluster_sector).await?;
+                self.entry.next_cluster(&mut self.sector_index).await?;
             }
             return Ok(buf.len());
         }
         buf[..sector_remain].copy_from_slice(&bytes[offset..]);
         let mut remain = &mut buf[sector_remain..];
-        self.entry.next_cluster(&mut self.cluster_sector).await?;
+        self.entry.next_cluster(&mut self.sector_index).await?;
         for _ in 0..remain.len() / self.entry.sector_size {
             let sector = self.entry.io.read(sector_index).await?;
             let bytes = crate::io::flatten(sector);
             remain[..self.entry.sector_size].copy_from_slice(bytes);
-            self.entry.next_cluster(&mut self.cluster_sector).await?;
+            self.entry.next_cluster(&mut self.sector_index).await?;
             remain = &mut remain[self.entry.sector_size..];
         }
         let sector = self.entry.io.read(sector_index).await?;

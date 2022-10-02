@@ -20,6 +20,7 @@ pub trait IO: Clone {
     fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
     async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [LogicalSector], Self::Error>;
     async fn write(&mut self, sector: u64, offset: usize, buf: &[u8]) -> Result<(), Self::Error>;
+    async fn flush(&mut self) -> Result<(), Self::Error>;
 }
 
 #[derive(Clone)]
@@ -48,18 +49,18 @@ impl<E, IO: crate::io::IO<Error = E>> IOWrapper<IO> {
 
 #[cfg(feature = "std")]
 pub mod std {
+    use std::mem::MaybeUninit;
+    use std::slice::from_raw_parts;
+
     #[cfg(feature = "async")]
     use async_std as std_;
     #[cfg(not(feature = "async"))]
     use std as std_;
-
     use std_::{
         fs::File,
         io::prelude::*,
         io::SeekFrom,
-        mem::MaybeUninit,
         path::Path,
-        slice::from_raw_parts,
         sync::{Arc, Mutex},
     };
 
@@ -144,6 +145,16 @@ pub mod std {
             let seek = SeekFrom::Start(sector * self.sector_size as u64 + offset as u64);
             file.seek(seek).await?;
             file.write_all(buf).await.map(|_| ())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            let mut file = match () {
+                #[cfg(not(feature = "async"))]
+                () => self.file.lock().unwrap(),
+                #[cfg(feature = "async")]
+                () => self.file.lock().await,
+            };
+            file.flush().await
         }
     }
 }

@@ -6,7 +6,7 @@ use alloc::rc::Rc;
 #[cfg(feature = "std")]
 use std::rc::Rc;
 
-use super::clusters::ClusterSector;
+use super::clusters::SectorIndex;
 use super::entry::{ClusterEntry, TouchOption};
 use super::file::File;
 use crate::error::Error;
@@ -21,7 +21,7 @@ pub struct EntrySet {
     pub name: heapless::String<255>,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub(crate) cluster_sector: ClusterSector,
+    pub(crate) sector_index: SectorIndex,
     pub(crate) entry_index: usize,
 }
 
@@ -41,18 +41,17 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
     where
         H: Fn(&EntrySet) -> Option<R>,
     {
-        let mut cluster_sector = self.entry.cluster_sector;
+        let mut sector_index = self.entry.sector_index;
         let mut entry_set = EntrySet {
             name: heapless::String::<255>::new(),
             file_directory: Default::default(),
             stream_extension: Default::default(),
-            cluster_sector,
+            sector_index,
             entry_index: 0,
         };
         let mut name_length: u8 = 0;
         let mut secondary_remain: u8 = 0;
-        let sector_index = entry_set.cluster_sector.sector_index();
-        let mut sector = self.entry.io.read(sector_index).await?;
+        let mut sector = self.entry.io.read(entry_set.sector_index.sector()).await?;
         loop {
             let f = |block| unsafe { transmute::<&[u8; 512], &[RawEntry; 16]>(block) }.iter();
             for (entry_index, entry) in sector.iter().map(f).flatten().enumerate() {
@@ -93,9 +92,9 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                     _ => continue,
                 }
             }
-            self.entry.next_cluster(&mut cluster_sector).await?;
-            sector = self.entry.io.read(cluster_sector.sector_index()).await?;
-            entry_set.cluster_sector = cluster_sector;
+            self.entry.next_cluster(&mut sector_index).await?;
+            sector = self.entry.io.read(sector_index.sector()).await?;
+            entry_set.sector_index = sector_index;
         }
     }
 
@@ -114,13 +113,13 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         let entry_set = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
         let stream_extension = &entry_set.stream_extension;
         let cluster_index = stream_extension.first_cluster.to_ne();
-        let cluster_sector = self.entry.cluster_sector.new_cluster(cluster_index);
+        let sector_index = self.entry.sector_index.with_cluster(cluster_index);
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
             fat: self.entry.fat,
-            meta: entry_set.cluster_sector,
+            meta: entry_set.sector_index,
             entry_index: entry_set.entry_index,
-            cluster_sector,
+            sector_index,
             sector_size: self.entry.sector_size,
             length: stream_extension.custom_defined.valid_data_length.to_ne(),
             capacity: stream_extension.data_length.to_ne(),
@@ -133,7 +132,7 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         } else {
             Ok(FileOrDirectory::File(File {
                 entry,
-                cluster_sector,
+                sector_index,
                 offset: 0,
             }))
         }

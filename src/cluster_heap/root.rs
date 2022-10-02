@@ -5,7 +5,7 @@ use alloc::rc::Rc;
 #[cfg(feature = "std")]
 use std::rc::Rc;
 
-use super::clusters::ClusterSector;
+use super::clusters::SectorIndex;
 use super::directory::Directory;
 use super::entry::ClusterEntry;
 use crate::endian::Little as LE;
@@ -28,13 +28,13 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
     pub(crate) async fn open(
         mut io: IO,
         fat: FAT,
-        cluster_sector: ClusterSector,
+        sector_index: SectorIndex,
     ) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<11>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
-        let sector_index = cluster_sector.sector_index();
-        let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
+        let offset = sector_index.sector();
+        let sector = io.read(offset).await.map_err(|e| Error::IO(e))?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
             match RawEntryType::new(entry[0]).entry_type() {
@@ -56,8 +56,8 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let upcase_table = upcase_table.ok_or(Error::UpcaseTableMissing)?;
         let allocation_bitmap = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
         let cluster_index = upcase_table.first_cluster.to_ne();
-        let sector_index = cluster_sector.new_cluster(cluster_index).sector_index();
-        let sector = io.read(sector_index).await.map_err(|e| Error::IO(e))?;
+        let offset = sector_index.with_cluster(cluster_index).sector();
+        let sector = io.read(offset).await.map_err(|e| Error::IO(e))?;
         let sector_size = sector.len() * 512;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let directory = Directory {
@@ -66,7 +66,7 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
                 fat,
                 meta: Default::default(),
                 entry_index: 0,
-                cluster_sector,
+                sector_index,
                 sector_size,
                 length: 0,
                 capacity: 0,
@@ -84,8 +84,8 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
-        let cluster_sector = &self.directory.entry.cluster_sector;
-        let first_sector = cluster_sector.new_cluster(first_cluster).sector_index();
+        let sector_index = &self.directory.entry.sector_index;
+        let first_sector = sector_index.with_cluster(first_cluster).sector();
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = self.directory.entry.sector_size;
         let num_sectors = data_length / sector_size as u64;
