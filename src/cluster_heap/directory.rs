@@ -1,7 +1,7 @@
 use core::mem;
 use core::mem::transmute;
 
-#[cfg(not(feature = "std"))]
+#[cfg(feature = "alloc")]
 use alloc::rc::Rc;
 #[cfg(feature = "std")]
 use std::rc::Rc;
@@ -116,11 +116,13 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         let sector_index = self.entry.sector_index.with_cluster(cluster_index);
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
+            #[cfg(any(feature = "async", feature = "std"))]
+            allocation_bitmap: self.entry.allocation_bitmap.clone(),
             fat: self.entry.fat,
             meta: entry_set.sector_index,
             entry_index: entry_set.entry_index,
             sector_index,
-            sector_size: self.entry.sector_size,
+            sector_size_shift: self.entry.sector_size_shift,
             length: stream_extension.custom_defined.valid_data_length.to_ne(),
             capacity: stream_extension.data_length.to_ne(),
         };

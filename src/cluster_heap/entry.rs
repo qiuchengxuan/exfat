@@ -1,3 +1,5 @@
+#[cfg(any(feature = "async", feature = "std"))]
+use super::allocation_bitmap::AllocationBitmap;
 use super::clusters::SectorIndex;
 use crate::error::Error;
 use crate::fat::FAT;
@@ -5,14 +7,18 @@ use crate::io::IOWrapper;
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
 use crate::region::fat::Entry;
+#[cfg(any(feature = "async", feature = "std"))]
+use crate::sync::{Arc, Mutex};
 
 pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
+    #[cfg(any(feature = "async", feature = "std"))]
+    pub allocation_bitmap: Arc<Mutex<AllocationBitmap<IO>>>,
     pub fat: FAT,
     pub meta: SectorIndex,
     pub entry_index: usize,
     pub sector_index: SectorIndex,
-    pub sector_size: usize,
+    pub sector_size_shift: u8,
     pub length: u64,
     pub capacity: u64,
 }
@@ -61,5 +67,21 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         }
         let offset = index * ENTRY_SIZE;
         self.io.write(sector_index, offset, &raw_entry).await
+    }
+}
+
+#[cfg(any(feature = "async", feature = "std"))]
+#[deasync::deasync]
+impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
+    pub async fn allocate(&mut self, cluster_index: u32) -> Result<Option<u32>, Error<E>> {
+        let mut bitmap = match () {
+            #[cfg(feature = "async")]
+            _ => self.allocation_bitmap.lock().await,
+            #[cfg(all(not(feature = "async"), feature = "std"))]
+            _ => self.allocation_bitmap.lock().unwrap(),
+            #[cfg(not(any(feature = "async", feature = "std")))]
+            _ => self.allocation_bitmap,
+        };
+        bitmap.allocate(cluster_index).await
     }
 }

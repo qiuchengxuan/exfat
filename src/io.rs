@@ -19,7 +19,8 @@ pub trait IO: Clone {
     /// Default to 512
     fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
     async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [LogicalSector], Self::Error>;
-    async fn write(&mut self, sector: u64, offset: usize, buf: &[u8]) -> Result<(), Self::Error>;
+    /// Caller guarantees bytes.len() <= SECTOR_SIZE - offset
+    async fn write(&mut self, sector: u64, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
     async fn flush(&mut self) -> Result<(), Self::Error>;
 }
 
@@ -44,6 +45,10 @@ impl<E, IO: crate::io::IO<Error = E>> IOWrapper<IO> {
     ) -> Result<(), Error<E>> {
         let result = self.0.write(sector, offset, buf).await;
         result.map_err(|e| Error::IO(e))
+    }
+
+    pub(crate) async fn flush(&mut self) -> Result<(), Error<E>> {
+        self.0.flush().await.map_err(|e| Error::IO(e))
     }
 }
 

@@ -19,9 +19,10 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
         if buf.len() > self.entry.length as usize {
             buf = &mut buf[..self.entry.length as usize];
         }
-        let offset = self.offset as usize % self.entry.sector_size;
+        let sector_size = 1 << self.entry.sector_size_shift;
+        let offset = self.offset as usize % sector_size;
         let sector_index = self.sector_index.sector();
-        let sector_remain = self.entry.sector_size - offset;
+        let sector_remain = sector_size - offset;
         let sector = self.entry.io.read(sector_index).await?;
         let bytes = crate::io::flatten(sector);
         if buf.len() <= sector_remain {
@@ -34,12 +35,12 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
         buf[..sector_remain].copy_from_slice(&bytes[offset..]);
         let mut remain = &mut buf[sector_remain..];
         self.entry.next_cluster(&mut self.sector_index).await?;
-        for _ in 0..remain.len() / self.entry.sector_size {
+        for _ in 0..remain.len() / sector_size {
             let sector = self.entry.io.read(sector_index).await?;
             let bytes = crate::io::flatten(sector);
-            remain[..self.entry.sector_size].copy_from_slice(bytes);
+            remain[..sector_size].copy_from_slice(bytes);
             self.entry.next_cluster(&mut self.sector_index).await?;
-            remain = &mut remain[self.entry.sector_size..];
+            remain = &mut remain[sector_size..];
         }
         let sector = self.entry.io.read(sector_index).await?;
         let bytes = crate::io::flatten(sector);

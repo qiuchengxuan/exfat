@@ -38,3 +38,4 @@ macro_rules! define {
 define!(u16);
 define!(u32);
 define!(u64);
+define!(usize);

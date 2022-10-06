@@ -5,6 +5,8 @@ use alloc::rc::Rc;
 #[cfg(feature = "std")]
 use std::rc::Rc;
 
+#[cfg(any(feature = "async", feature = "std"))]
+use super::allocation_bitmap::AllocationBitmap;
 use super::clusters::SectorIndex;
 use super::directory::Directory;
 use super::entry::ClusterEntry;
@@ -15,26 +17,28 @@ use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::RawEntry;
+#[cfg(any(feature = "async", feature = "std"))]
+use crate::sync::{Arc, Mutex};
 
 pub struct RootDirectory<IO> {
     directory: Directory<IO>,
     upcase_table: region::data::UpcaseTable,
     volumn_label: Option<heapless::String<11>>,
-    allocation_bitmap: region::data::AllocationBitmap,
 }
 
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
     pub(crate) async fn open(
-        mut io: IO,
+        mut io: IOWrapper<IO>,
         fat: FAT,
         sector_index: SectorIndex,
+        sector_size_shift: u8,
     ) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<11>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
         let offset = sector_index.sector();
-        let sector = io.read(offset).await.map_err(|e| Error::IO(e))?;
+        let sector = io.read(offset).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
             match RawEntryType::new(entry[0]).entry_type() {
@@ -54,20 +58,31 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
             };
         }
         let upcase_table = upcase_table.ok_or(Error::UpcaseTableMissing)?;
-        let allocation_bitmap = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
+        #[cfg(any(feature = "async", feature = "std"))]
+        let allocation_bitmap = {
+            let region = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
+            let first = sector_index.with_cluster(region.first_cluster.to_ne());
+            let length = region.data_length.to_ne() as u32;
+            Arc::new(Mutex::new(
+                AllocationBitmap::new(io.clone(), first, length).await?,
+            ))
+        };
+        #[cfg(not(any(feature = "async", feature = "std")))]
+        let _ = allocation_bitmap;
         let cluster_index = upcase_table.first_cluster.to_ne();
         let offset = sector_index.with_cluster(cluster_index).sector();
-        let sector = io.read(offset).await.map_err(|e| Error::IO(e))?;
-        let sector_size = sector.len() * 512;
+        let sector = io.read(offset).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let directory = Directory {
             entry: ClusterEntry {
-                io: IOWrapper::new(io),
+                io,
+                #[cfg(any(feature = "async", feature = "std"))]
+                allocation_bitmap,
                 fat,
                 meta: Default::default(),
                 entry_index: 0,
                 sector_index,
-                sector_size,
+                sector_size_shift,
                 length: 0,
                 capacity: 0,
             },
@@ -77,7 +92,6 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
             directory,
             upcase_table,
             volumn_label,
-            allocation_bitmap,
         })
     }
 
@@ -87,7 +101,7 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let sector_index = &self.directory.entry.sector_index;
         let first_sector = sector_index.with_cluster(first_cluster).sector();
         let data_length = self.upcase_table.data_length.to_ne();
-        let sector_size = self.directory.entry.sector_size;
+        let sector_size = 1 << self.directory.entry.sector_size_shift;
         let num_sectors = data_length / sector_size as u64;
         let io = &mut self.directory.entry.io;
         for i in 0..num_sectors {

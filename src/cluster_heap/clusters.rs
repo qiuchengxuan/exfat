@@ -34,3 +34,22 @@ impl SectorIndex {
         true
     }
 }
+
+impl core::ops::Add<u32> for SectorIndex {
+    type Output = Self;
+
+    fn add(self, value: u32) -> Self {
+        Self {
+            cluster: self.cluster + value / self.sectors_per_cluster,
+            sector: value % self.sectors_per_cluster,
+            ..self
+        }
+    }
+}
+
+impl core::ops::AddAssign<u32> for &mut SectorIndex {
+    fn add_assign(&mut self, value: u32) {
+        self.cluster += value / self.sectors_per_cluster;
+        self.sector = value % self.sectors_per_cluster;
+    }
+}

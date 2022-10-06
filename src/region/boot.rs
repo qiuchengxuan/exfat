@@ -1,8 +1,18 @@
 // Main boot region
 
+use bitfield::bitfield;
+
 use crate::endian::Little as LE;
 
 pub const MAX_SECTOR_SIZE: usize = 4096;
+
+bitfield! {
+    #[derive(Copy, Clone, Debug, Default)]
+    pub struct VolumeFlags(u16);
+    pub media_failure, set_media_failure: 2, 2;
+    pub volume_dirty, set_volume_dirty: 1, 1;
+    pub active_fat, set_active_fat: 0, 0;
+}
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -35,9 +45,13 @@ impl BootSector {
         self.jump_boot == hex!("EB 76 90") && &self.filesystem_name == b"EXFAT   "
     }
 
+    pub fn volume_flags(&self) -> VolumeFlags {
+        VolumeFlags(self.volume_flags.to_ne())
+    }
+
     /// 512 ~ 4096
-    pub fn bytes_per_sector(&self) -> usize {
-        2usize.pow(self.bytes_per_sector_shift as u32)
+    pub fn bytes_per_sector(&self) -> u32 {
+        2u32.pow(self.bytes_per_sector_shift as u32)
     }
 
     pub fn sectors_per_cluster(&self) -> u32 {

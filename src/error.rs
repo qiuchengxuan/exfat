@@ -1,6 +1,7 @@
 use core::fmt::{Display, Formatter, Result};
 
 pub enum Error<E> {
+    Generic(&'static str),
     IO(E),
     NotExFAT,
     Checksum,
@@ -17,6 +18,7 @@ pub enum Error<E> {
 impl<E: Display> Display for Error<E> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
+            Self::Generic(s) => write!(f, "Generic error({})", s),
             Self::IO(e) => write!(f, "IO({})", e),
             Self::NotExFAT => write!(f, "Not ExFAT filesystem"),
             Self::TexFATNotSupported => write!(f, "TexFAT not supported"),
