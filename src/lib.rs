@@ -54,7 +54,7 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
         let sector_index = SectorIndex {
             heap_offset: boot_sector.cluster_heap_offset.to_ne(),
-            sectors_per_cluster: boot_sector.sectors_per_cluster(),
+            sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
             cluster: boot_sector.first_cluster_of_root_directory.to_ne(),
             sector: 0,
         };
@@ -75,6 +75,12 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         Ok(boot_sector.volume_flags().volume_dirty() > 0)
     }
 
+    pub async fn percent_inuse(&mut self) -> Result<u8, Error<E>> {
+        let blocks = self.io.read(0).await?;
+        let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
+        Ok(boot_sector.percent_inuse)
+    }
+
     pub async fn set_dirty(&mut self, dirty: bool) -> Result<(), Error<E>> {
         let sector = self.io.read(0).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&sector[0]) };
@@ -84,12 +90,6 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         let bytes: [u8; 2] = unsafe { mem::transmute(volume_flags) };
         self.io.write(0, offset, &bytes).await?;
         self.io.flush().await
-    }
-
-    pub async fn percent_inuse(&mut self) -> Result<u8, Error<E>> {
-        let blocks = self.io.read(0).await?;
-        let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
-        Ok(boot_sector.percent_inuse)
     }
 
     pub async fn validate_checksum(&mut self) -> Result<(), Error<E>> {

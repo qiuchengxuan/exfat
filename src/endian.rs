@@ -24,14 +24,6 @@ macro_rules! define {
                 Self(<$type>::to_le(t))
             }
         }
-
-        impl core::ops::Add<$type> for Little<$type> {
-            type Output = $type;
-            #[inline]
-            fn add(self, rhs: $type) -> $type {
-                <$type>::from_le(self.0) + rhs
-            }
-        }
     };
 }
 

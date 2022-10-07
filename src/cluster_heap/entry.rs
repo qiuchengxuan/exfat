@@ -1,3 +1,5 @@
+use memoffset::offset_of;
+
 #[cfg(any(feature = "async", feature = "std"))]
 use super::allocation_bitmap::AllocationBitmap;
 use super::clusters::SectorIndex;
@@ -5,6 +7,7 @@ use crate::error::Error;
 use crate::fat::FAT;
 use crate::io::IOWrapper;
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
+use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
 use crate::region::fat::Entry;
 #[cfg(any(feature = "async", feature = "std"))]
@@ -16,7 +19,7 @@ pub(crate) struct ClusterEntry<IO> {
     pub allocation_bitmap: Arc<Mutex<AllocationBitmap<IO>>>,
     pub fat: FAT,
     pub meta: SectorIndex,
-    pub entry_index: usize,
+    pub entry_index: usize, // Within sector
     pub sector_index: SectorIndex,
     pub sector_size_shift: u8,
     pub length: u64,
@@ -40,6 +43,10 @@ impl Default for TouchOption {
 
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
+    pub fn cluster_size_shift(&self) -> u8 {
+        self.sector_size_shift + self.meta.sectors_per_cluster_shift
+    }
+
     pub async fn next_cluster(&mut self, index: &mut SectorIndex) -> Result<(), Error<E>> {
         if index.next() {
             return Ok(());
@@ -82,6 +89,47 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
             #[cfg(not(any(feature = "async", feature = "std")))]
             _ => self.allocation_bitmap,
         };
-        bitmap.allocate(cluster_index).await
+        let next_cluster_index = match bitmap.allocate(cluster_index).await? {
+            Some(index) => index,
+            None => return Ok(None),
+        };
+        self.capacity += 1 << self.cluster_size_shift();
+
+        let sector_index = self.fat.sector(cluster_index).unwrap();
+        let offset = self.fat.offset(cluster_index);
+        let bytes = u32::to_le_bytes(next_cluster_index);
+        self.io.write(sector_index as u64, offset, &bytes).await?;
+
+        let index = self.entry_index + 1;
+        let sector_index = self.meta.sector();
+        let offset = index * ENTRY_SIZE + offset_of!(Secondary<StreamExtension>, data_length);
+        let bytes = u64::to_le_bytes(self.capacity);
+        self.io.write(sector_index, offset, &bytes).await?;
+        Ok(Some(next_cluster_index))
+    }
+
+    pub async fn update_length(&mut self, length: u64) -> Result<(), Error<E>> {
+        self.length = length;
+        let index = self.entry_index + 1;
+        let sector_index = self.meta.sector();
+        let offset = index * ENTRY_SIZE
+            + offset_of!(Secondary<StreamExtension>, custom_defined)
+            + offset_of!(StreamExtension, valid_data_length);
+        let bytes = u64::to_le_bytes(self.capacity);
+        self.io.write(sector_index, offset, &bytes).await
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use memoffset::offset_of;
+
+    use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
+
+    #[test]
+    fn test_valid_data_length_offset() {
+        let offset = offset_of!(Secondary<StreamExtension>, custom_defined)
+            + offset_of!(StreamExtension, valid_data_length);
+        assert_eq!(offset, 8);
     }
 }

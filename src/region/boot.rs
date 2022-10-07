@@ -4,8 +4,6 @@ use bitfield::bitfield;
 
 use crate::endian::Little as LE;
 
-pub const MAX_SECTOR_SIZE: usize = 4096;
-
 bitfield! {
     #[derive(Copy, Clone, Debug, Default)]
     pub struct VolumeFlags(u16);
@@ -52,10 +50,6 @@ impl BootSector {
     /// 512 ~ 4096
     pub fn bytes_per_sector(&self) -> u32 {
         2u32.pow(self.bytes_per_sector_shift as u32)
-    }
-
-    pub fn sectors_per_cluster(&self) -> u32 {
-        2u32.pow(self.sectors_per_cluster_shift as u32)
     }
 }
 

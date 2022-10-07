@@ -25,6 +25,10 @@ impl FAT {
         Some(self.offset + index)
     }
 
+    pub fn offset(&self, cluster_index: u32) -> usize {
+        (cluster_index as usize + 2) * 4 % (1 << self.sector_size_shift)
+    }
+
     pub fn next_cluster(&mut self, sector: &[[u8; 512]], cluster_index: u32) -> Result<Entry, u32> {
         let offset = (cluster_index as usize + 2) % ((1 << self.sector_size_shift) / 4);
         let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[offset / 128]) };

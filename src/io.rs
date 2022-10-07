@@ -72,7 +72,7 @@ pub mod std {
     #[cfg(feature = "async")]
     use async_trait::async_trait;
 
-    use crate::region::boot::MAX_SECTOR_SIZE;
+    const MAX_SECTOR_SIZE: usize = 4096;
 
     #[derive(Debug)]
     pub struct FileIO {
