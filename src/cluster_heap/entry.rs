@@ -2,9 +2,9 @@ use memoffset::offset_of;
 
 #[cfg(any(feature = "async", feature = "std"))]
 use super::allocation_bitmap::AllocationBitmap;
-use super::clusters::SectorIndex;
+use super::clusters::SectorRef;
 use crate::error::Error;
-use crate::fat::FAT;
+use crate::fat;
 use crate::io::IOWrapper;
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
@@ -12,15 +12,16 @@ use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
 use crate::region::fat::Entry;
 #[cfg(any(feature = "async", feature = "std"))]
 use crate::sync::{Arc, Mutex};
+use crate::types::ClusterID;
 
 pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
     #[cfg(any(feature = "async", feature = "std"))]
     pub allocation_bitmap: Arc<Mutex<AllocationBitmap<IO>>>,
-    pub fat: FAT,
-    pub meta: SectorIndex,
+    pub fat_info: fat::Info,
+    pub meta: SectorRef,
     pub entry_index: usize, // Within sector
-    pub sector_index: SectorIndex,
+    pub sector_ref: SectorRef,
     pub sector_size_shift: u8,
     pub length: u64,
     pub capacity: u64,
@@ -47,22 +48,23 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         self.sector_size_shift + self.meta.sectors_per_cluster_shift
     }
 
-    pub async fn next_cluster(&mut self, index: &mut SectorIndex) -> Result<(), Error<E>> {
-        if index.next() {
-            return Ok(());
+    pub async fn next(&mut self, sector_ref: SectorRef) -> Result<SectorRef, Error<E>> {
+        if let Some(sector_ref) = sector_ref.next() {
+            return Ok(sector_ref);
         }
-        let offset = self.fat.sector(index.cluster).ok_or(Error::EOF)?;
-        let sector = self.io.read(offset as u64).await?;
-        match self.fat.next_cluster(sector, index.cluster) {
-            Ok(Entry::Next(cluster)) => Ok(index.set_cluster(cluster)),
+        let cluster_id = sector_ref.cluster_id;
+        let sector_id = self.fat_info.fat_sector_id(cluster_id).ok_or(Error::EOF)?;
+        let sector = self.io.read(sector_id).await?;
+        match self.fat_info.next_cluster_id(sector, sector_ref.cluster_id) {
+            Ok(Entry::Next(cluster_id)) => Ok(sector_ref.new(cluster_id, 0)),
             _ => Err(Error::EOF),
         }
     }
 
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
         let index = self.entry_index;
-        let sector_index = self.meta.sector();
-        let sector = self.io.read(sector_index).await?;
+        let sector_id = self.meta.id();
+        let sector = self.io.read(sector_id).await?;
         let entries: &[[RawEntry; 16]] = unsafe { core::mem::transmute(sector) };
         let raw_entry = entries[index / 16][index % 16];
         let mut file_directory: FileDirectory = unsafe { core::mem::transmute(raw_entry) };
@@ -73,14 +75,14 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
             file_directory.update_last_modified_timestamp(datetime);
         }
         let offset = index * ENTRY_SIZE;
-        self.io.write(sector_index, offset, &raw_entry).await
+        self.io.write(sector_id, offset, &raw_entry).await
     }
 }
 
 #[cfg(any(feature = "async", feature = "std"))]
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
-    pub async fn allocate(&mut self, cluster_index: u32) -> Result<Option<u32>, Error<E>> {
+    pub async fn allocate(&mut self, cluster_id: ClusterID) -> Result<Option<ClusterID>, Error<E>> {
         let mut bitmap = match () {
             #[cfg(feature = "async")]
             _ => self.allocation_bitmap.lock().await,
@@ -89,34 +91,34 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
             #[cfg(not(any(feature = "async", feature = "std")))]
             _ => self.allocation_bitmap,
         };
-        let next_cluster_index = match bitmap.allocate(cluster_index).await? {
+        let next_cluster_id = match bitmap.allocate(cluster_id).await? {
             Some(index) => index,
             None => return Ok(None),
         };
         self.capacity += 1 << self.cluster_size_shift();
 
-        let sector_index = self.fat.sector(cluster_index).unwrap();
-        let offset = self.fat.offset(cluster_index);
-        let bytes = u32::to_le_bytes(next_cluster_index);
-        self.io.write(sector_index as u64, offset, &bytes).await?;
+        let sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
+        let offset = self.fat_info.offset(cluster_id);
+        let bytes = u32::to_le_bytes(next_cluster_id.into());
+        self.io.write(sector_id, offset, &bytes).await?;
 
         let index = self.entry_index + 1;
-        let sector_index = self.meta.sector();
+        let sector_id = self.meta.id();
         let offset = index * ENTRY_SIZE + offset_of!(Secondary<StreamExtension>, data_length);
         let bytes = u64::to_le_bytes(self.capacity);
-        self.io.write(sector_index, offset, &bytes).await?;
-        Ok(Some(next_cluster_index))
+        self.io.write(sector_id, offset, &bytes).await?;
+        Ok(Some(next_cluster_id))
     }
 
     pub async fn update_length(&mut self, length: u64) -> Result<(), Error<E>> {
         self.length = length;
         let index = self.entry_index + 1;
-        let sector_index = self.meta.sector();
+        let sector_id = self.meta.id();
         let offset = index * ENTRY_SIZE
             + offset_of!(Secondary<StreamExtension>, custom_defined)
             + offset_of!(StreamExtension, valid_data_length);
         let bytes = u64::to_le_bytes(self.capacity);
-        self.io.write(sector_index, offset, &bytes).await
+        self.io.write(sector_id, offset, &bytes).await
     }
 }
 

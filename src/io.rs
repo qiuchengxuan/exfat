@@ -5,10 +5,11 @@ use alloc::boxed::Box;
 use async_trait::async_trait;
 
 use crate::error::Error;
+use crate::types::SectorID;
 
-pub type LogicalSector = [u8; 512];
+pub type Sector = [u8; 512];
 
-pub(crate) fn flatten(sector: &[LogicalSector]) -> &[u8] {
+pub(crate) fn flatten(sector: &[Sector]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(&sector[0][0], sector.len() * 512) }
 }
 
@@ -18,9 +19,9 @@ pub trait IO: Clone {
     type Error;
     /// Default to 512
     fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
-    async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [LogicalSector], Self::Error>;
+    async fn read<'a>(&'a mut self, id: SectorID) -> Result<&'a [Sector], Self::Error>;
     /// Caller guarantees bytes.len() <= SECTOR_SIZE - offset
-    async fn write(&mut self, sector: u64, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
+    async fn write(&mut self, id: SectorID, offset: usize, data: &[u8]) -> Result<(), Self::Error>;
     async fn flush(&mut self) -> Result<(), Self::Error>;
 }
 
@@ -33,17 +34,17 @@ impl<E, IO: crate::io::IO<Error = E>> IOWrapper<IO> {
         Self(io)
     }
 
-    pub(crate) async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [[u8; 512]], Error<E>> {
+    pub(crate) async fn read<'a>(&'a mut self, sector: SectorID) -> Result<&'a [Sector], Error<E>> {
         self.0.read(sector).await.map_err(|e| Error::IO(e))
     }
 
     pub(crate) async fn write(
         &mut self,
-        sector: u64,
+        id: SectorID,
         offset: usize,
-        buf: &[u8],
+        data: &[u8],
     ) -> Result<(), Error<E>> {
-        let result = self.0.write(sector, offset, buf).await;
+        let result = self.0.write(id, offset, data).await;
         result.map_err(|e| Error::IO(e))
     }
 
@@ -71,6 +72,8 @@ pub mod std {
 
     #[cfg(feature = "async")]
     use async_trait::async_trait;
+
+    use crate::types::SectorID;
 
     const MAX_SECTOR_SIZE: usize = 4096;
 
@@ -119,8 +122,8 @@ pub mod std {
             Ok(())
         }
 
-        async fn read<'a>(&'a mut self, sector: u64) -> Result<&'a [[u8; 512]], Self::Error> {
-            let seek = SeekFrom::Start(sector * self.sector_size as u64);
+        async fn read<'a>(&'a mut self, sector: SectorID) -> Result<&'a [[u8; 512]], Self::Error> {
+            let seek = SeekFrom::Start(u64::from(sector) * self.sector_size as u64);
 
             let mut file = match () {
                 #[cfg(not(feature = "async"))]
@@ -137,7 +140,7 @@ pub mod std {
 
         async fn write(
             &mut self,
-            sector: u64,
+            sector: SectorID,
             offset: usize,
             buf: &[u8],
         ) -> Result<(), Self::Error> {
@@ -147,7 +150,7 @@ pub mod std {
                 #[cfg(feature = "async")]
                 () => self.file.lock().await,
             };
-            let seek = SeekFrom::Start(sector * self.sector_size as u64 + offset as u64);
+            let seek = SeekFrom::Start(u64::from(sector) * self.sector_size as u64 + offset as u64);
             file.seek(seek).await?;
             file.write_all(buf).await.map(|_| ())
         }

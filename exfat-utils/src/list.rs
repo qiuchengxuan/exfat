@@ -1,6 +1,5 @@
 use std::io;
 
-use chrono::{DateTime, FixedOffset, Local};
 use exfat::error::Error;
 use exfat::io::std::FileIO;
 use exfat::ExFAT;
@@ -19,8 +18,8 @@ pub fn list(device: String, _path: String) -> Result<(), Error<io::Error>> {
         print!("{}", if attrs.hidden() > 0 { "h" } else { "-" });
         print!("{}", if attrs.archive() > 0 { "a" } else { "-" });
         print!(" {:8}", entry_set.stream_extension.data_length());
-        let datetime: DateTime<FixedOffset> = entry_set.file_directory.create_timestamp().into();
-        let localtime = datetime.with_timezone(&Local);
+        let create_at = entry_set.file_directory.create_timestamp();
+        let localtime = create_at.localtime().unwrap();
         print!(" {}", localtime.format("%Y-%m-%d %H:%M:%S"));
         if attrs.directory() > 0 {
             println!(" {}/", entry_set.name);

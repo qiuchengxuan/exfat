@@ -1,6 +1,6 @@
 use bitfield::bitfield;
 #[cfg(feature = "chrono")]
-use chrono::{Datelike, Timelike};
+use chrono::{Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use super::super::entry_type::RawEntryType;
 use crate::endian::Little as LE;
@@ -35,17 +35,17 @@ impl Timestamp {
 }
 
 #[cfg(feature = "chrono")]
-impl Into<chrono::NaiveDateTime> for Timestamp {
-    fn into(self) -> chrono::NaiveDateTime {
-        let date = chrono::NaiveDate::from_ymd(self.year() as i32, self.month(), self.day());
-        let time = chrono::NaiveTime::from_hms(self.hour(), self.minute(), self.second());
-        chrono::NaiveDateTime::new(date, time)
+impl Into<NaiveDateTime> for Timestamp {
+    fn into(self) -> NaiveDateTime {
+        let date = NaiveDate::from_ymd_opt(self.year() as i32, self.month(), self.day());
+        let time = NaiveTime::from_hms_opt(self.hour(), self.minute(), self.second());
+        NaiveDateTime::new(date.unwrap_or_default(), time.unwrap_or_default())
     }
 }
 
 #[cfg(feature = "chrono")]
-impl From<chrono::NaiveDateTime> for Timestamp {
-    fn from(datetime: chrono::NaiveDateTime) -> Self {
+impl From<NaiveDateTime> for Timestamp {
+    fn from(datetime: NaiveDateTime) -> Self {
         let mut timestamp = Self::default();
         timestamp.set_year(datetime.year() as u32);
         timestamp.set_month(datetime.month());
@@ -59,11 +59,11 @@ impl From<chrono::NaiveDateTime> for Timestamp {
 
 #[cfg(feature = "chrono")]
 impl Timestamp {
-    fn chrono_with_millis(&self, millis: u32) -> chrono::NaiveDateTime {
-        let date = chrono::NaiveDate::from_ymd(self.year() as i32, self.month(), self.day());
-        let time =
-            chrono::NaiveTime::from_hms_milli(self.hour(), self.minute(), self.second(), millis);
-        chrono::NaiveDateTime::new(date, time)
+    fn chrono_with_millis(&self, millis: u32) -> Result<NaiveDateTime, ()> {
+        let date = NaiveDate::from_ymd_opt(self.year() as i32, self.month(), self.day());
+        let (hour, minute, second) = (self.hour(), self.minute(), self.second());
+        let time = NaiveTime::from_hms_milli_opt(hour, minute, second, millis);
+        Ok(NaiveDateTime::new(date.ok_or(())?, time.ok_or(())?))
     }
 }
 
@@ -94,9 +94,10 @@ impl UTCOffset {
 }
 
 #[cfg(feature = "chrono")]
-impl Into<chrono::FixedOffset> for UTCOffset {
-    fn into(self) -> chrono::FixedOffset {
-        chrono::FixedOffset::east(self.minutes() as i32 * 60)
+impl core::convert::TryInto<FixedOffset> for UTCOffset {
+    type Error = ();
+    fn try_into(self) -> Result<FixedOffset, Self::Error> {
+        FixedOffset::east_opt(self.minutes() as i32 * 60).ok_or(())
     }
 }
 
@@ -108,10 +109,12 @@ pub struct DateTime {
 }
 
 #[cfg(feature = "chrono")]
-impl Into<chrono::DateTime<chrono::FixedOffset>> for DateTime {
-    fn into(self) -> chrono::DateTime<chrono::FixedOffset> {
-        let datetime = self.timestamp.chrono_with_millis(self.millisecond as u32);
-        chrono::DateTime::from_utc(datetime, self.utc_offset.into())
+impl DateTime {
+    pub fn localtime(&self) -> Result<chrono::DateTime<Local>, ()> {
+        let naive = self.timestamp.chrono_with_millis(self.millisecond as u32)?;
+        let offset: FixedOffset = self.utc_offset.try_into()?;
+        let datetime: chrono::DateTime<FixedOffset> = chrono::DateTime::from_utc(naive, offset);
+        Ok(datetime.with_timezone(&Local))
     }
 }
 
