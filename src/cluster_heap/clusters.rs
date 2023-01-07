@@ -1,55 +1,56 @@
+use crate::types::{ClusterID, SectorID};
+
 #[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct SectorIndex {
+pub(crate) struct SectorRef {
     pub heap_offset: u32,
     pub sectors_per_cluster_shift: u8,
-    pub cluster: u32,
-    pub sector: u32,
+    pub cluster_id: ClusterID,
+    pub offset: u32,
 }
 
-impl SectorIndex {
-    pub fn sector(&self) -> u64 {
-        self.heap_offset as u64
-            + (self.cluster - 2) as u64 * (1 << self.sectors_per_cluster_shift) as u64
-            + self.sector as u64
+impl SectorRef {
+    pub fn id(&self) -> SectorID {
+        let index: u32 = self.cluster_id.into();
+        let num_sectors = (index as u64 - 2) * (1 << self.sectors_per_cluster_shift);
+        SectorID::from(self.heap_offset as u64 + num_sectors + self.offset as u64)
     }
 
-    pub fn with_cluster(&self, cluster: u32) -> Self {
+    pub fn new(&self, cluster_id: ClusterID, offset: u32) -> Self {
         Self {
-            cluster,
-            sector: 0,
+            cluster_id,
+            offset,
             ..*self
         }
     }
 
-    pub fn set_cluster(&mut self, cluster: u32) {
-        self.cluster = cluster;
-        self.sector = 0;
-    }
-
-    pub fn next(&mut self) -> bool {
-        if self.sector + 1 > (1 << self.sectors_per_cluster_shift) {
-            return false;
+    pub fn next(&self) -> Option<Self> {
+        if self.offset + 1 > (1 << self.sectors_per_cluster_shift) {
+            return None;
         }
-        self.sector += 1;
-        true
+        Some(Self {
+            offset: self.offset + 1,
+            ..*self
+        })
     }
 }
 
-impl core::ops::Add<u32> for SectorIndex {
+impl<I: Into<u32>> core::ops::Add<I> for SectorRef {
     type Output = Self;
 
-    fn add(self, value: u32) -> Self {
+    fn add(self, rhs: I) -> Self {
+        let rhs = rhs.into();
         Self {
-            cluster: self.cluster + value / (1 << self.sectors_per_cluster_shift),
-            sector: value % (1 << self.sectors_per_cluster_shift),
+            cluster_id: self.cluster_id + rhs / (1 << self.sectors_per_cluster_shift),
+            offset: rhs % (1 << self.sectors_per_cluster_shift),
             ..self
         }
     }
 }
 
-impl core::ops::AddAssign<u32> for &mut SectorIndex {
-    fn add_assign(&mut self, value: u32) {
-        self.cluster += value / (1 << self.sectors_per_cluster_shift);
-        self.sector = value % (1 << self.sectors_per_cluster_shift);
+impl<I: Into<u32>> core::ops::AddAssign<I> for &mut SectorRef {
+    fn add_assign(&mut self, rhs: I) {
+        let rhs = rhs.into();
+        self.cluster_id += rhs / (1 << self.sectors_per_cluster_shift);
+        self.offset = rhs % (1 << self.sectors_per_cluster_shift);
     }
 }

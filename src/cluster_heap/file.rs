@@ -1,11 +1,11 @@
-use super::clusters::SectorIndex;
+use super::clusters::SectorRef;
 use super::entry::{ClusterEntry, TouchOption};
 use crate::error::Error;
 use crate::region::data::entryset::primary::DateTime;
 
 pub struct File<IO> {
     pub(crate) entry: ClusterEntry<IO>,
-    pub(crate) sector_index: SectorIndex,
+    pub(crate) sector_ref: SectorRef,
     pub(crate) offset: u64,
 }
 
@@ -21,28 +21,28 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
         }
         let sector_size = 1 << self.entry.sector_size_shift;
         let offset = self.offset as usize % sector_size;
-        let sector_index = self.sector_index.sector();
+        let sector_id = self.sector_ref.id();
         let sector_remain = sector_size - offset;
-        let sector = self.entry.io.read(sector_index).await?;
+        let sector = self.entry.io.read(sector_id).await?;
         let bytes = crate::io::flatten(sector);
         if buf.len() <= sector_remain {
             buf.copy_from_slice(&bytes[offset..offset + buf.len()]);
             if buf.len() == sector_remain {
-                self.entry.next_cluster(&mut self.sector_index).await?;
+                self.sector_ref = self.entry.next(self.sector_ref).await?;
             }
             return Ok(buf.len());
         }
         buf[..sector_remain].copy_from_slice(&bytes[offset..]);
         let mut remain = &mut buf[sector_remain..];
-        self.entry.next_cluster(&mut self.sector_index).await?;
+        self.sector_ref = self.entry.next(self.sector_ref).await?;
         for _ in 0..remain.len() / sector_size {
-            let sector = self.entry.io.read(sector_index).await?;
+            let sector = self.entry.io.read(sector_id).await?;
             let bytes = crate::io::flatten(sector);
             remain[..sector_size].copy_from_slice(bytes);
-            self.entry.next_cluster(&mut self.sector_index).await?;
+            self.sector_ref = self.entry.next(self.sector_ref).await?;
             remain = &mut remain[sector_size..];
         }
-        let sector = self.entry.io.read(sector_index).await?;
+        let sector = self.entry.io.read(sector_id).await?;
         let bytes = crate::io::flatten(sector);
         remain.copy_from_slice(&bytes[..remain.len()]);
         Ok(buf.len())
@@ -57,35 +57,35 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
             return Ok(0);
         }
         let mut remain = bytes;
-        let sector_offset = self.sector_index.sector();
+        let sector_id = self.sector_ref.id();
         let sector_size = 1 << self.entry.sector_size_shift;
         let offset = self.offset as usize % sector_size;
         let sector_remain = sector_size - offset;
         if sector_remain > 0 {
             if bytes.len() <= sector_remain {
-                self.entry.io.write(sector_offset, offset, bytes).await?;
+                self.entry.io.write(sector_id, offset, bytes).await?;
                 self.offset += bytes.len() as u64;
                 return Ok(bytes.len());
             }
             let chunk = &bytes[..sector_remain];
-            self.entry.io.write(sector_offset, offset, chunk).await?;
+            self.entry.io.write(sector_id, offset, chunk).await?;
             self.offset += sector_remain as u64;
             remain = &bytes[sector_remain..];
         }
         while remain.len() > 0 {
             if self.offset < self.entry.capacity {
-                self.entry.next_cluster(&mut self.sector_index).await?;
+                self.sector_ref = self.entry.next(self.sector_ref).await?;
             } else {
-                let cluster_index = match self.entry.allocate(self.sector_index.cluster).await? {
-                    Some(index) => index,
+                let cluster_id = match self.entry.allocate(self.sector_ref.cluster_id).await? {
+                    Some(id) => id,
                     None => break,
                 };
-                self.sector_index = self.sector_index.with_cluster(cluster_index);
+                self.sector_ref = self.sector_ref.new(cluster_id, 0);
             }
-            let sector_offset = self.sector_index.sector();
+            let sector_id = self.sector_ref.id();
             let length = core::cmp::min(remain.len(), sector_size);
             let chunk = &remain[..length];
-            self.entry.io.write(sector_offset, 0, chunk).await?;
+            self.entry.io.write(sector_id, 0, chunk).await?;
             remain = &remain[length..];
         }
         self.offset += (bytes.len() - remain.len()) as u64;

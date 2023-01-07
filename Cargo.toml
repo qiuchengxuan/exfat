@@ -10,16 +10,17 @@ license = "MIT"
 description = "ExFAT filesystem library with async support"
 
 [dependencies]
-async-std = { version = "1.11", optional = true }
+async-std = { version = "1.12", optional = true }
 async-trait = "0.1"
 bitfield = "0.13"
 chrono = { version = "0.4", optional = true, default-features = false }
 deasync = "0.1"
+derive_more = "0.99"
 fast-async-mutex = { version = "0.6", optional = true }
 heapless = "0.7"
 hex-literal = "0.3"
 log = "0.4"
-memoffset = "0.6"
+memoffset = "0.8"
 
 [features]
 alloc = []
