@@ -1,15 +1,13 @@
 use core::mem;
 
-#[cfg(not(feature = "std"))]
 use alloc::rc::Rc;
-#[cfg(feature = "std")]
-use std::rc::Rc;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
-#[cfg(any(feature = "async", feature = "std"))]
-use super::allocation_bitmap::AllocationBitmap;
 use super::clusters::SectorRef;
 use super::directory::Directory;
 use super::entry::ClusterEntry;
+use super::{allocation_bitmap::AllocationBitmap, context::Context, entry::with_context};
 use crate::endian::Little as LE;
 use crate::error::Error;
 use crate::fat;
@@ -17,8 +15,7 @@ use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::RawEntry;
-#[cfg(any(feature = "async", feature = "std"))]
-use crate::sync::{Arc, Mutex};
+use crate::sync::Mutex;
 
 pub struct RootDirectory<IO> {
     directory: Directory<IO>,
@@ -28,7 +25,7 @@ pub struct RootDirectory<IO> {
 
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
-    pub(crate) async fn open(
+    pub(crate) async fn new(
         mut io: IOWrapper<IO>,
         fat_info: fat::Info,
         sector_ref: SectorRef,
@@ -57,32 +54,31 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
             };
         }
         let upcase_table = upcase_table.ok_or(Error::UpcaseTableMissing)?;
-        #[cfg(any(feature = "async", feature = "std"))]
-        let allocation_bitmap = {
+        let context = {
             let region = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
             let first = sector_ref.new(region.first_cluster.to_ne().into(), 0);
             let length = region.data_length.to_ne() as u32;
-            Arc::new(Mutex::new(
-                AllocationBitmap::new(io.clone(), first, length).await?,
-            ))
+            Arc::new(Mutex::new(Context {
+                allocation_bitmap: AllocationBitmap::new(io.clone(), first, length).await?,
+                opened_entries: Vec::with_capacity(4),
+            }))
         };
-        #[cfg(not(any(feature = "async", feature = "std")))]
-        let _ = allocation_bitmap;
         let cluster_id = upcase_table.first_cluster.to_ne();
         let sector = io.read(sector_ref.new(cluster_id.into(), 0).id()).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let directory = Directory {
             entry: ClusterEntry {
                 io,
-                #[cfg(any(feature = "async", feature = "std"))]
-                allocation_bitmap,
+                context,
                 fat_info,
                 meta: Default::default(),
                 entry_index: 0,
                 sector_ref,
                 sector_size_shift,
+                last_cluster_id: 0.into(),
                 length: 0,
                 capacity: 0,
+                closed: false,
             },
             upcase_table: Rc::new((*array).into()),
         };
@@ -122,8 +118,15 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         self.volumn_label.as_ref().map(|label| label.as_str())
     }
 
-    pub fn directory<'a>(&'a mut self) -> &'a mut Directory<IO> {
-        &mut self.directory
+    pub async fn open(&mut self) -> Result<Directory<IO>, Error<E>> {
+        let entry = &mut self.directory.entry;
+        if !with_context!(entry.context).add_entry(entry.sector_ref.cluster_id) {
+            return Err(Error::AlreadyOpen);
+        }
+        Ok(Directory {
+            entry: entry.clone(),
+            upcase_table: self.directory.upcase_table.clone(),
+        })
     }
 
     pub fn close(self) {}

@@ -1,6 +1,6 @@
-use derive_more::{From, Into};
+use derive_more::{Display, From, Into};
 
-#[derive(Copy, Clone, Debug, Default, From, Into)]
+#[derive(Copy, Clone, Debug, Default, Display, From, Into, Eq, Ord, PartialOrd, PartialEq)]
 pub struct SectorID(u64);
 
 impl<I: Into<u64>> core::ops::Add<I> for SectorID {
@@ -11,8 +11,14 @@ impl<I: Into<u64>> core::ops::Add<I> for SectorID {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, From, Into)]
+#[derive(Copy, Clone, Debug, Default, Display, From, Into, Eq, Ord, PartialOrd, PartialEq)]
 pub struct ClusterID(u32);
+
+impl ClusterID {
+    pub fn valid(&self) -> bool {
+        return self.0 > 0;
+    }
+}
 
 impl<I: Into<u32>> core::ops::Add<I> for ClusterID {
     type Output = Self;

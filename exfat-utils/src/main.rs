@@ -1,4 +1,5 @@
 mod cat;
+pub(crate) mod filepath;
 mod list;
 mod touch;
 

@@ -1,8 +1,9 @@
+use alloc::sync::Arc;
+
 use memoffset::offset_of;
 
-#[cfg(any(feature = "async", feature = "std"))]
-use super::allocation_bitmap::AllocationBitmap;
 use super::clusters::SectorRef;
+use super::context::Context;
 use crate::error::Error;
 use crate::fat;
 use crate::io::IOWrapper;
@@ -10,21 +11,36 @@ use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
 use crate::region::fat::Entry;
-#[cfg(any(feature = "async", feature = "std"))]
-use crate::sync::{Arc, Mutex};
+use crate::sync::Mutex;
 use crate::types::ClusterID;
 
+#[macro_export]
+macro_rules! with_context {
+    ($context: expr) => {
+        match () {
+            #[cfg(feature = "async")]
+            _ => $context.lock().await,
+            #[cfg(all(not(feature = "async")))]
+            _ => $context.lock().unwrap(),
+        }
+    };
+}
+
+pub(crate) use with_context;
+
+#[derive(Clone)]
 pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
-    #[cfg(any(feature = "async", feature = "std"))]
-    pub allocation_bitmap: Arc<Mutex<AllocationBitmap<IO>>>,
+    pub context: Arc<Mutex<Context<IO>>>,
     pub fat_info: fat::Info,
     pub meta: SectorRef,
     pub entry_index: usize, // Within sector
     pub sector_ref: SectorRef,
     pub sector_size_shift: u8,
+    pub last_cluster_id: ClusterID,
     pub length: u64,
     pub capacity: u64,
+    pub closed: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -66,8 +82,8 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         let sector_id = self.meta.id();
         let sector = self.io.read(sector_id).await?;
         let entries: &[[RawEntry; 16]] = unsafe { core::mem::transmute(sector) };
-        let raw_entry = entries[index / 16][index % 16];
-        let mut file_directory: FileDirectory = unsafe { core::mem::transmute(raw_entry) };
+        let mut raw_entry = entries[index / 16][index % 16];
+        let file_directory: &mut FileDirectory = unsafe { core::mem::transmute(&mut raw_entry) };
         if option.access {
             file_directory.update_last_accessed_timestamp(datetime);
         }
@@ -79,27 +95,43 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     }
 }
 
-#[cfg(any(feature = "async", feature = "std"))]
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
-    pub async fn allocate(&mut self, cluster_id: ClusterID) -> Result<Option<ClusterID>, Error<E>> {
-        let mut bitmap = match () {
-            #[cfg(feature = "async")]
-            _ => self.allocation_bitmap.lock().await,
-            #[cfg(all(not(feature = "async"), feature = "std"))]
-            _ => self.allocation_bitmap.lock().unwrap(),
-            #[cfg(not(any(feature = "async", feature = "std")))]
-            _ => self.allocation_bitmap,
-        };
-        let next_cluster_id = match bitmap.allocate(cluster_id).await? {
-            Some(index) => index,
-            None => return Ok(None),
-        };
+    pub async fn last_cluster_id(&mut self) -> Result<ClusterID, Error<E>> {
+        if self.last_cluster_id.valid() {
+            return Ok(self.last_cluster_id);
+        }
+        let mut cluster_id = self.sector_ref.cluster_id;
+        if !cluster_id.valid() {
+            return Ok(cluster_id);
+        }
+        let mut sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
+        let mut sector = self.io.read(sector_id).await?;
+        loop {
+            match self.fat_info.next_cluster_id(sector, cluster_id).unwrap() {
+                Entry::BadCluster => return Err(Error::BadCluster(cluster_id)),
+                Entry::Next(id) => cluster_id = id,
+                Entry::Last => break,
+            }
+            let id = self.fat_info.fat_sector_id(cluster_id).unwrap();
+            if id != sector_id {
+                sector_id = id;
+                sector = self.io.read(sector_id).await?;
+            }
+        }
+        self.last_cluster_id = cluster_id;
+        Ok(cluster_id)
+    }
+
+    pub async fn allocate(&mut self) -> Result<ClusterID, Error<E>> {
+        let last_cluster_id = self.last_cluster_id().await?;
+        let mut context = with_context!(self.context);
+        let cluster_id = context.allocation_bitmap.allocate(last_cluster_id).await?;
         self.capacity += 1 << self.cluster_size_shift();
 
         let sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
         let offset = self.fat_info.offset(cluster_id);
-        let bytes = u32::to_le_bytes(next_cluster_id.into());
+        let bytes = u32::to_le_bytes(cluster_id.into());
         self.io.write(sector_id, offset, &bytes).await?;
 
         let index = self.entry_index + 1;
@@ -107,7 +139,7 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         let offset = index * ENTRY_SIZE + offset_of!(Secondary<StreamExtension>, data_length);
         let bytes = u64::to_le_bytes(self.capacity);
         self.io.write(sector_id, offset, &bytes).await?;
-        Ok(Some(next_cluster_id))
+        Ok(cluster_id)
     }
 
     pub async fn update_length(&mut self, length: u64) -> Result<(), Error<E>> {
@@ -119,6 +151,31 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
             + offset_of!(StreamExtension, valid_data_length);
         let bytes = u64::to_le_bytes(self.capacity);
         self.io.write(sector_id, offset, &bytes).await
+    }
+
+    pub async fn close(mut self) -> Result<(), Error<E>> {
+        with_context!(self.context).remove_entry(self.sector_ref.cluster_id);
+        self.closed = true;
+        Ok(())
+    }
+}
+
+impl<IO> Drop for ClusterEntry<IO> {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        match () {
+            #[cfg(feature = "async")]
+            () => {
+                panic!("Explicit close must be called");
+            }
+            #[cfg(not(feature = "async"))]
+            () => {
+                let mut context = self.context.lock().unwrap();
+                context.remove_entry(self.sector_ref.cluster_id);
+            }
+        }
     }
 }
 

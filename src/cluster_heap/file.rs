@@ -12,7 +12,8 @@ pub struct File<IO> {
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> File<IO> {
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
-        self.entry.touch(datetime, option).await
+        self.entry.touch(datetime, option).await?;
+        self.entry.io.flush().await
     }
 
     pub async fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<E>> {
@@ -49,7 +50,6 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
     }
 }
 
-#[cfg(any(feature = "async", feature = "std"))]
 #[deasync::deasync]
 impl<E, IO: crate::io::IO<Error = E>> File<IO> {
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, Error<E>> {
@@ -76,10 +76,7 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
             if self.offset < self.entry.capacity {
                 self.sector_ref = self.entry.next(self.sector_ref).await?;
             } else {
-                let cluster_id = match self.entry.allocate(self.sector_ref.cluster_id).await? {
-                    Some(id) => id,
-                    None => break,
-                };
+                let cluster_id = self.entry.allocate().await?;
                 self.sector_ref = self.sector_ref.new(cluster_id, 0);
             }
             let sector_id = self.sector_ref.id();
@@ -97,5 +94,9 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
 
     pub async fn flush(&mut self) -> Result<(), Error<E>> {
         self.entry.io.flush().await
+    }
+
+    pub async fn close(self) -> Result<(), Error<E>> {
+        self.entry.close().await
     }
 }

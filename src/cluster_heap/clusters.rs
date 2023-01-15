@@ -1,7 +1,7 @@
 use crate::types::{ClusterID, SectorID};
 
 #[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct SectorRef {
+pub struct SectorRef {
     pub heap_offset: u32,
     pub sectors_per_cluster_shift: u8,
     pub cluster_id: ClusterID,

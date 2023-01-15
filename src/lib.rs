@@ -1,6 +1,5 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[macro_use]
@@ -13,7 +12,6 @@ pub mod error;
 mod fat;
 pub mod io;
 mod region;
-#[cfg(any(feature = "async", feature = "std"))]
 pub(crate) mod sync;
 pub mod types;
 mod upcase_table;
@@ -23,7 +21,7 @@ use core::mem;
 use memoffset::offset_of;
 
 use cluster_heap::clusters::SectorRef;
-pub use cluster_heap::directory::FileOrDirectory;
+pub use cluster_heap::directory::{Directory, FileOrDirectory};
 use cluster_heap::root::RootDirectory as RootDir;
 use error::Error;
 use io::IOWrapper;
@@ -114,7 +112,7 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
 
     pub async fn root_directory(&mut self) -> Result<RootDir<IO>, Error<E>> {
         let io = self.io.clone();
-        RootDir::open(io, self.fat_info, self.sector_ref, self.sector_size_shift).await
+        RootDir::new(io, self.fat_info, self.sector_ref, self.sector_size_shift).await
     }
 }
 

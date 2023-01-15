@@ -1,11 +1,15 @@
 use core::fmt::{Display, Formatter, Result};
 
+use crate::types::ClusterID;
+
 pub enum Error<E> {
     Generic(&'static str),
     IO(E),
     NotExFAT,
     Checksum,
     EOF,
+    NoSpace,
+    BadCluster(ClusterID),
     // FAT
     TexFATNotSupported,
     // FileDirectory
@@ -13,6 +17,7 @@ pub enum Error<E> {
     UpcaseTableChecksum,
     AllocationBitmapMissing,
     NoSuchFileOrDirectory,
+    AlreadyOpen,
 }
 
 impl<E: Display> Display for Error<E> {
@@ -24,10 +29,13 @@ impl<E: Display> Display for Error<E> {
             Self::TexFATNotSupported => write!(f, "TexFAT not supported"),
             Self::Checksum => write!(f, "Checksum mismatch"),
             Self::EOF => write!(f, "End of file"),
+            Self::NoSpace => write!(f, "Insufficent space"),
+            Self::BadCluster(id) => write!(f, "Bad cluster({:#X})", u32::from(*id)),
             Self::UpcaseTableMissing => write!(f, "Upcase table missing"),
             Self::UpcaseTableChecksum => write!(f, "Upcase table checksum mismatch"),
             Self::AllocationBitmapMissing => write!(f, "Allocation bitmap missing"),
             Self::NoSuchFileOrDirectory => write!(f, "No such file or directory"),
+            Self::AlreadyOpen => write!(f, "File or directory already open"),
         }
     }
 }
