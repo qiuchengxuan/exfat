@@ -13,12 +13,6 @@ pub struct Secondary<T: Default> {
     pub(crate) data_length: LE<u64>,
 }
 
-impl<T: Default> Secondary<T> {
-    pub fn data_length(&self) -> u64 {
-        self.data_length.to_ne()
-    }
-}
-
 impl<T: Sized + Default> Clone for Secondary<T> {
     fn clone(&self) -> Self {
         unsafe { core::ptr::read(self) }

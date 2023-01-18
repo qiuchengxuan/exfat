@@ -23,6 +23,17 @@ pub struct EntrySet {
     pub(crate) entry_index: usize,
 }
 
+impl EntrySet {
+    pub fn data_length(&self) -> u64 {
+        self.stream_extension.data_length.to_ne()
+    }
+
+    pub fn valid_data_length(&self) -> u64 {
+        let valid_data_length = self.stream_extension.custom_defined.valid_data_length;
+        valid_data_length.to_ne()
+    }
+}
+
 pub struct Directory<IO> {
     pub(crate) entry: ClusterEntry<IO>,
     pub(crate) upcase_table: Rc<UpcaseTable>,
@@ -150,10 +161,12 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                 upcase_table: self.upcase_table.clone(),
             }))
         } else {
+            let size = entry.length;
             Ok(FileOrDirectory::File(File {
                 entry,
                 sector_ref,
-                offset: 0,
+                cursor: 0,
+                size,
             }))
         }
     }

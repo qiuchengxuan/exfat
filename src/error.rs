@@ -18,6 +18,7 @@ pub enum Error<E> {
     AllocationBitmapMissing,
     NoSuchFileOrDirectory,
     AlreadyOpen,
+    InvalidInput,
 }
 
 impl<E: Display> Display for Error<E> {
@@ -36,6 +37,7 @@ impl<E: Display> Display for Error<E> {
             Self::AllocationBitmapMissing => write!(f, "Allocation bitmap missing"),
             Self::NoSuchFileOrDirectory => write!(f, "No such file or directory"),
             Self::AlreadyOpen => write!(f, "File or directory already open"),
+            Self::InvalidInput => write!(f, "Invalid input"),
         }
     }
 }

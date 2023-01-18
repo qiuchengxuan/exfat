@@ -7,7 +7,7 @@ use exfat::FileOrDirectory;
 
 use super::filepath::open;
 
-pub fn touch(device: String, path: String) -> Result<(), Error<io::Error>> {
+pub fn touch(device: &str, path: &str) -> Result<(), Error<io::Error>> {
     let io = FileIO::open(device).map_err(|e| Error::IO(e))?;
     let mut exfat = ExFAT::new(io)?;
     exfat.validate_checksum()?;

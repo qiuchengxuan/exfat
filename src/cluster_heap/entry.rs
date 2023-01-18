@@ -139,6 +139,7 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         let offset = index * ENTRY_SIZE + offset_of!(Secondary<StreamExtension>, data_length);
         let bytes = u64::to_le_bytes(self.capacity);
         self.io.write(sector_id, offset, &bytes).await?;
+        self.io.flush().await?;
         Ok(cluster_id)
     }
 
@@ -149,11 +150,13 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         let offset = index * ENTRY_SIZE
             + offset_of!(Secondary<StreamExtension>, custom_defined)
             + offset_of!(StreamExtension, valid_data_length);
-        let bytes = u64::to_le_bytes(self.capacity);
-        self.io.write(sector_id, offset, &bytes).await
+        let bytes = u64::to_le_bytes(self.length);
+        self.io.write(sector_id, offset, &bytes).await?;
+        self.io.flush().await
     }
 
     pub async fn close(mut self) -> Result<(), Error<E>> {
+        self.io.flush().await?;
         with_context!(self.context).remove_entry(self.sector_ref.cluster_id);
         self.closed = true;
         Ok(())

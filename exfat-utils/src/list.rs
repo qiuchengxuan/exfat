@@ -7,7 +7,7 @@ use exfat::FileOrDirectory;
 
 use super::filepath::open;
 
-pub fn list(device: String, path: String) -> Result<(), Error<io::Error>> {
+pub fn list(device: &str, path: &str) -> Result<(), Error<io::Error>> {
     let io = FileIO::open(device).map_err(|e| Error::IO(e))?;
     let mut exfat = ExFAT::new(io)?;
     exfat.validate_checksum()?;
@@ -27,7 +27,7 @@ pub fn list(device: String, path: String) -> Result<(), Error<io::Error>> {
         print!("{}", if attrs.system() > 0 { "s" } else { "-" });
         print!("{}", if attrs.hidden() > 0 { "h" } else { "-" });
         print!("{}", if attrs.archive() > 0 { "a" } else { "-" });
-        print!(" {:8}", entry_set.stream_extension.data_length());
+        print!(" {:8}", entry_set.valid_data_length());
         let modified_at = entry_set.file_directory.last_modified_timestamp();
         let localtime = modified_at.localtime().unwrap();
         print!(" {}", localtime.format("%Y-%m-%d %H:%M:%S"));

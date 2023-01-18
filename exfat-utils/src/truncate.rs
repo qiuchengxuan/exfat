@@ -1,5 +1,4 @@
 use std::io;
-use std::io::Write;
 
 use exfat::error::Error;
 use exfat::io::std::FileIO;
@@ -8,7 +7,7 @@ use exfat::FileOrDirectory;
 
 use crate::filepath::open;
 
-pub fn cat(device: &str, path: &str) -> Result<(), Error<io::Error>> {
+pub fn truncate(device: &str, path: &str, size: u64) -> Result<(), Error<io::Error>> {
     let io = FileIO::open(device).map_err(|e| Error::IO(e))?;
     let mut exfat = ExFAT::new(io)?;
     exfat.validate_checksum()?;
@@ -18,17 +17,5 @@ pub fn cat(device: &str, path: &str) -> Result<(), Error<io::Error>> {
         FileOrDirectory::File(f) => f,
         FileOrDirectory::Directory(_) => return Err(Error::Generic("Not a file")),
     };
-    if file.size() == 0 {
-        return Ok(());
-    }
-    let mut stdout = io::stdout();
-    let mut buf = [0u8; 512];
-    loop {
-        let size = file.read(&mut buf)?;
-        stdout.write_all(&buf[..size]).unwrap();
-        if size < buf.len() {
-            break;
-        }
-    }
-    Ok(())
+    file.truncate(size)
 }
