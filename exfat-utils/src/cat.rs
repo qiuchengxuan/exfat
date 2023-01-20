@@ -16,7 +16,7 @@ pub fn cat(device: &str, path: &str) -> Result<(), Error<io::Error>> {
     root.validate_upcase_table_checksum()?;
     let mut file = match open(root.open()?, &path)? {
         FileOrDirectory::File(f) => f,
-        FileOrDirectory::Directory(_) => return Err(Error::Generic("Not a file")),
+        FileOrDirectory::Directory(_) => return Err(Error::InvalidInput("Not a file")),
     };
     if file.size() == 0 {
         return Ok(());

@@ -5,6 +5,8 @@ extern crate alloc;
 #[macro_use]
 extern crate hex_literal;
 extern crate heapless;
+#[macro_use]
+extern crate log;
 
 mod cluster_heap;
 mod endian;
@@ -34,7 +36,7 @@ pub struct ExFAT<IO> {
     sector_ref: SectorRef,
 }
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
     pub async fn new(mut io: IO) -> Result<Self, Error<E>> {
         let blocks = io.read(0.into()).await.map_err(|e| Error::IO(e))?;
@@ -48,6 +50,7 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         let sector_size = boot_sector.bytes_per_sector() as usize;
         let fat_offset = boot_sector.fat_offset.to_ne();
         let fat_length = boot_sector.fat_length.to_ne();
+        trace!("FAT offset {} length {}", fat_offset, fat_length);
 
         io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
         let sector_ref = SectorRef {

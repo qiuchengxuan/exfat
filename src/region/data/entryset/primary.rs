@@ -126,11 +126,7 @@ impl<TZ: chrono::Offset + chrono::TimeZone> From<chrono::DateTime<TZ>> for DateT
         let utc_offset = UTCOffset::new((seconds / 60) as i16);
         let naive = datetime.naive_utc();
         let millisecond = naive.timestamp_subsec_millis() as u16;
-        Self {
-            timestamp: naive.into(),
-            millisecond,
-            utc_offset,
-        }
+        Self { timestamp: naive.into(), millisecond, utc_offset }
     }
 }
 

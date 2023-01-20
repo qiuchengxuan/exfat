@@ -16,21 +16,14 @@ impl SectorRef {
     }
 
     pub fn new(&self, cluster_id: ClusterID, offset: u32) -> Self {
-        Self {
-            cluster_id,
-            offset,
-            ..*self
-        }
+        Self { cluster_id, offset, ..*self }
     }
 
     pub fn next(&self) -> Option<Self> {
         if self.offset + 1 > (1 << self.sectors_per_cluster_shift) {
             return None;
         }
-        Some(Self {
-            offset: self.offset + 1,
-            ..*self
-        })
+        Some(Self { offset: self.offset + 1, ..*self })
     }
 }
 
@@ -47,7 +40,7 @@ impl<I: Into<u32>> core::ops::Add<I> for SectorRef {
     }
 }
 
-impl<I: Into<u32>> core::ops::AddAssign<I> for &mut SectorRef {
+impl<I: Into<u32>> core::ops::AddAssign<I> for SectorRef {
     fn add_assign(&mut self, rhs: I) {
         let rhs = rhs.into();
         self.cluster_id += rhs / (1 << self.sectors_per_cluster_shift);

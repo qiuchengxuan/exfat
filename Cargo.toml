@@ -24,9 +24,10 @@ memoffset = "0.8"
 spin-sync = "0.3"
 
 [features]
-async = ["deasync/bypass", "fast-async-mutex"]
+async = ["fast-async-mutex"]
 std = ["async-std"]
 default = ["std"]
+log-max-level-off = ["log/max_level_off", "log/release_max_level_off"]
 
 [lib]
 name = "exfat"

@@ -14,7 +14,7 @@ pub(crate) fn flatten(sector: &[Sector]) -> &[u8] {
 }
 
 #[cfg_attr(feature = "async", async_trait)]
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 pub trait IO: Clone {
     type Error;
     /// Default to 512
@@ -28,7 +28,7 @@ pub trait IO: Clone {
 #[derive(Clone)]
 pub(crate) struct IOWrapper<IO>(IO);
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> IOWrapper<IO> {
     pub(crate) fn new(io: IO) -> Self {
         Self(io)
@@ -94,7 +94,7 @@ pub mod std {
         }
     }
 
-    #[deasync::deasync]
+    #[cfg_attr(not(feature = "async"), deasync::deasync)]
     impl FileIO {
         pub async fn open<P: AsRef<Path>>(filepath: P) -> std::io::Result<Self> {
             let mut options = match () {
@@ -113,7 +113,7 @@ pub mod std {
     }
 
     #[cfg_attr(feature = "async", async_trait)]
-    #[deasync::deasync]
+    #[cfg_attr(not(feature = "async"), deasync::deasync)]
     impl super::IO for FileIO {
         type Error = std::io::Error;
 

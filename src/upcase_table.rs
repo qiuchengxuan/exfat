@@ -8,13 +8,20 @@ impl UpcaseTable {
         }
     }
 
+    pub fn to_upper(&self, name: &str) -> heapless::String<255> {
+        let mut upcase = heapless::String::new();
+        for ch in name.chars() {
+            let ch = unsafe { char::from_u32_unchecked(self.lookup(ch as u16) as u32) };
+            upcase.push(ch).unwrap();
+        }
+        upcase
+    }
+
     pub fn equals(&self, left: &str, right: &str) -> bool {
         if left.len() != right.len() {
             return false;
         }
-        let (left_chars, right_chars) = (left.chars(), right.chars());
-        let chars = left_chars.zip(right_chars);
-        for (left_ch, right_ch) in chars {
+        for (left_ch, right_ch) in left.chars().zip(right.chars()) {
             if self.lookup(left_ch as u16) != self.lookup(right_ch as u16) {
                 return false;
             }

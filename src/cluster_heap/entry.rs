@@ -4,6 +4,7 @@ use memoffset::offset_of;
 
 use super::clusters::SectorRef;
 use super::context::Context;
+use super::entryset::EntryID;
 use crate::error::Error;
 use crate::fat;
 use crate::io::IOWrapper;
@@ -28,6 +29,15 @@ macro_rules! with_context {
 
 pub(crate) use with_context;
 
+pub(crate) fn name_hash(name: &str) -> u16 {
+    let mut hash = 0;
+    for ch in name.chars() {
+        hash = if hash & 1 > 0 { 0x8000 } else { 0 } + (hash >> 1) + ch as u16;
+        hash = if hash & 1 > 0 { 0x8000 } else { 0 } + (hash >> 1) + ((ch as u32) >> 16) as u16;
+    }
+    hash
+}
+
 #[derive(Clone)]
 pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
@@ -43,6 +53,12 @@ pub(crate) struct ClusterEntry<IO> {
     pub closed: bool,
 }
 
+impl<IO> ClusterEntry<IO> {
+    pub(crate) fn id(&self) -> EntryID {
+        EntryID { sector_id: self.sector_ref.id(), index: self.entry_index }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct TouchOption {
     pub access: bool,
@@ -51,14 +67,11 @@ pub struct TouchOption {
 
 impl Default for TouchOption {
     fn default() -> Self {
-        Self {
-            access: true,
-            modified: true,
-        }
+        Self { access: true, modified: true }
     }
 }
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     pub fn cluster_size_shift(&self) -> u8 {
         self.sector_size_shift + self.meta.sectors_per_cluster_shift
@@ -95,7 +108,7 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     }
 }
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     pub async fn last_cluster_id(&mut self) -> Result<ClusterID, Error<E>> {
         if self.last_cluster_id.valid() {
@@ -136,6 +149,7 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
 
         let index = self.entry_index + 1;
         let sector_id = self.meta.id();
+        // TODO: ensure NotFatChain false
         let offset = index * ENTRY_SIZE + offset_of!(Secondary<StreamExtension>, data_length);
         let bytes = u64::to_le_bytes(self.capacity);
         self.io.write(sector_id, offset, &bytes).await?;
@@ -157,7 +171,8 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
 
     pub async fn close(mut self) -> Result<(), Error<E>> {
         self.io.flush().await?;
-        with_context!(self.context).remove_entry(self.sector_ref.cluster_id);
+        let mut context = with_context!(self.context);
+        context.opened_entries.remove(self.id());
         self.closed = true;
         Ok(())
     }
@@ -171,12 +186,12 @@ impl<IO> Drop for ClusterEntry<IO> {
         match () {
             #[cfg(feature = "async")]
             () => {
-                panic!("Explicit close must be called");
+                panic!("Close must be called explicitly");
             }
             #[cfg(not(feature = "async"))]
             () => {
                 let mut context = self.context.lock().unwrap();
-                context.remove_entry(self.sector_ref.cluster_id);
+                context.opened_entries.remove(self.id());
             }
         }
     }

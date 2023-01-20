@@ -14,27 +14,27 @@ pub fn list(device: &str, path: &str) -> Result<(), Error<io::Error>> {
     let mut root = exfat.root_directory()?;
     root.validate_upcase_table_checksum()?;
     let mut directory = match open(root.open()?, &path)? {
-        FileOrDirectory::File(_) => return Err(Error::Generic("Not a directory")),
+        FileOrDirectory::File(_) => return Err(Error::InvalidInput("Not a directory")),
         FileOrDirectory::Directory(dir) => dir,
     };
-    directory.walk(|entry_set, in_use| -> bool {
-        if !in_use {
+    directory.walk(|entryset| -> bool {
+        if !entryset.in_use() {
             return false;
         }
-        let attrs = entry_set.file_directory.file_attributes();
+        let attrs = entryset.file_directory.file_attributes();
         print!("{}", if attrs.directory() > 0 { "d" } else { "-" });
         print!("{}", if attrs.read_only() > 0 { "r" } else { "-" });
         print!("{}", if attrs.system() > 0 { "s" } else { "-" });
         print!("{}", if attrs.hidden() > 0 { "h" } else { "-" });
         print!("{}", if attrs.archive() > 0 { "a" } else { "-" });
-        print!(" {:8}", entry_set.valid_data_length());
-        let modified_at = entry_set.file_directory.last_modified_timestamp();
+        print!(" {:8}", entryset.valid_data_length());
+        let modified_at = entryset.file_directory.last_modified_timestamp();
         let localtime = modified_at.localtime().unwrap();
         print!(" {}", localtime.format("%Y-%m-%d %H:%M:%S"));
         if attrs.directory() > 0 {
-            println!(" {}/", entry_set.name);
+            println!(" {}/", entryset.name);
         } else {
-            println!(" {}", entry_set.name);
+            println!(" {}", entryset.name);
         }
         false
     })?;

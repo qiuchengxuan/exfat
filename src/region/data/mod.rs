@@ -41,9 +41,7 @@ impl Into<heapless::String<11>> for VolumnLabel {
         let mut label: heapless::String<11> = heapless::String::new();
         for i in 0..self.character_count {
             let ch = self.volumn_label[i as usize].to_ne();
-            label
-                .push(unsafe { char::from_u32_unchecked(ch as u32) })
-                .ok();
+            label.push(unsafe { char::from_u32_unchecked(ch as u32) }).ok();
         }
         label
     }

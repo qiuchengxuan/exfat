@@ -4,14 +4,17 @@ use memoffset::offset_of;
 
 use super::clusters::SectorRef;
 use crate::error::Error;
+use crate::fat;
 use crate::io::IOWrapper;
 use crate::region::boot::BootSector;
+use crate::region::fat::Entry;
 use crate::types::ClusterID;
 
 #[derive(Clone)]
 pub struct DumbAllocator<IO> {
     io: IOWrapper<IO>,
     base: SectorRef,
+    fat_info: fat::Info,
     length: u32,
     sector_size_shift: u8,
     num_clusters: u32,
@@ -43,7 +46,7 @@ fn bit_offset(bit: usize) -> usize {
     panic!("Not a single bit or is zero")
 }
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     async fn init(&mut self) -> Result<(), Error<E>> {
         let sector = self.io.read(self.base.id()).await?;
@@ -68,6 +71,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     pub(crate) async fn new(
         mut io: IOWrapper<IO>,
         base: SectorRef,
+        fat_info: fat::Info,
         length: u32,
     ) -> Result<Self, Error<E>> {
         let blocks = io.read(0.into()).await?;
@@ -75,6 +79,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let mut bitmap = Self {
             io,
             base,
+            fat_info,
             length,
             sector_size_shift: boot_sector.bytes_per_sector_shift,
             num_clusters: boot_sector.cluster_count.to_ne(),
@@ -123,6 +128,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     }
 
     pub async fn allocate(&mut self, cluster_id: ClusterID) -> Result<ClusterID, Error<E>> {
+        trace!("Allocate cluster starts from {}", cluster_id);
         if self.num_available_clusters >= self.num_clusters {
             return Err(Error::NoSpace);
         }
@@ -133,8 +139,66 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let offset = byte_offset % sector_size;
         let bytes = (bits | (1 << bit_offset)).to_be_bytes();
         self.io.write(sector_id, offset, &bytes).await?;
+        self.num_available_clusters -= 1;
         self.ensure_percent_inuse().await?;
-        Ok(ClusterID::from(byte_offset as u32 * 8 + bit_offset))
+        let cluster_id = ClusterID::from(byte_offset as u32 * 8 + bit_offset);
+        trace!("Allocated cluster {}", cluster_id);
+        Ok(cluster_id)
+    }
+
+    async fn release_one(&mut self, cluster_id: ClusterID) -> Result<(), Error<E>> {
+        trace!("Release cluster id {}", cluster_id);
+        let index = u32::from(cluster_id) - 2;
+        let byte_offset = index / 8;
+        if byte_offset >= self.length {
+            warn!("Cluster ID {} out of range", cluster_id);
+            return Err(Error::Generic("Cluster id out of range"));
+        }
+        let sector_size = 1 << self.sector_size_shift;
+        let sector_offset = byte_offset / sector_size;
+        let sector_id = (self.base + sector_offset).id();
+        let sector = self.io.read(sector_id).await?;
+        let offset = (byte_offset % sector_size) as usize;
+        let bit_offset = index % 8;
+        let byte = sector[offset / 512][offset % 512] & !(1 << bit_offset);
+        self.io.write(sector_id, offset, &[byte; 1]).await?;
+        Ok(())
+    }
+
+    pub async fn release(&mut self, cluster_id: ClusterID, chain: bool) -> Result<(), Error<E>> {
+        trace!("Release clusters starts with cluster id {}", cluster_id);
+        if !chain {
+            self.release_one(cluster_id).await?;
+            self.ensure_percent_inuse().await?;
+            return self.io.flush().await;
+        }
+        let mut cluster_id = cluster_id;
+        while cluster_id.valid() {
+            self.release_one(cluster_id).await?;
+            self.num_available_clusters += 1;
+            let sector_id = match self.fat_info.fat_sector_id(cluster_id) {
+                Some(id) => id,
+                None => return Ok(()),
+            };
+            let sector = self.io.read(sector_id).await?;
+            let entry = match self.fat_info.next_cluster_id(sector, cluster_id) {
+                Ok(entry) => entry,
+                Err(value) => {
+                    warn!("Invalid next entry {:X} for cluster id {}", value, cluster_id);
+                    return Err(Error::Generic("Not a valid entry"));
+                }
+            };
+            match entry {
+                Entry::Next(id) => cluster_id = id.into(),
+                Entry::Last => break,
+                Entry::BadCluster => {
+                    warn!("Encountered bad cluster for cluster-id {}", cluster_id);
+                    break;
+                }
+            }
+        }
+        self.ensure_percent_inuse().await?;
+        return self.io.flush().await;
     }
 }
 

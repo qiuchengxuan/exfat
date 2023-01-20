@@ -13,11 +13,11 @@ pub enum SeekFrom {
 pub struct File<IO> {
     pub(crate) entry: ClusterEntry<IO>,
     pub(crate) sector_ref: SectorRef,
-    pub(crate) cursor: u64,
     pub(crate) size: u64,
+    pub(crate) cursor: u64,
 }
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> File<IO> {
     pub fn size(&self) -> u64 {
         self.size
@@ -118,9 +118,9 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
             SeekFrom::End(offset) => Some((self.cursor as i64) + offset),
             SeekFrom::Current(offset) => (self.cursor as i64).checked_add(offset),
         };
-        let cursor = option.ok_or(Error::InvalidInput)?;
+        let cursor = option.ok_or(Error::InvalidInput("Seek position"))?;
         if cursor < 0 || cursor >= self.size as i64 {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidInput("Seek out of range"));
         }
         let cursor = cursor as u64;
         let sector_size = 1 << self.entry.sector_size_shift;
@@ -142,7 +142,7 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
 
     pub async fn truncate(&mut self, size: u64) -> Result<(), Error<E>> {
         if size > self.size {
-            return Err(Error::Generic("Size larger than file size"));
+            return Err(Error::InvalidInput("Size larger than file size"));
         }
         if self.cursor > size {
             self.cursor = size;

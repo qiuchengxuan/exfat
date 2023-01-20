@@ -100,10 +100,7 @@ mod test {
         file.read(&mut bytes).unwrap();
         CMD::new("rm").args(["-f", "test.img"]).output().unwrap();
         assert_eq!(u32::from_le_bytes(bytes), checksum.sum());
-        println!(
-            "{:?} {:?}",
-            boot_sector.jump_boot, boot_sector.filesystem_name
-        );
+        println!("{:?} {:?}", boot_sector.jump_boot, boot_sector.filesystem_name);
         assert!(boot_sector.is_exfat());
     }
 }

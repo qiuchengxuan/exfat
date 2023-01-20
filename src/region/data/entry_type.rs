@@ -12,6 +12,23 @@ pub(crate) enum EntryType {
     VendorAllocation,
 }
 
+impl Into<u8> for EntryType {
+    fn into(self) -> u8 {
+        match self {
+            Self::AllocationBitmap => 0x1,
+            Self::UpcaseTable => 0x2,
+            Self::VolumnLabel => 0x3,
+            Self::FileDirectory => 0x5,
+            Self::VolumnGUID => 0x20,
+            Self::TexFATPadding => 0x21,
+            Self::StreamExtension => 0x40,
+            Self::Filename => 0x41,
+            Self::VendorExtension => 0x60,
+            Self::VendorAllocation => 0x61,
+        }
+    }
+}
+
 impl TryFrom<u8> for EntryType {
     type Error = u8;
     fn try_from(byte: u8) -> Result<Self, u8> {
@@ -38,6 +55,12 @@ impl TryFrom<u8> for EntryType {
 
 #[derive(Copy, Clone, Default, Debug)]
 pub(crate) struct RawEntryType(u8);
+
+impl Into<u8> for RawEntryType {
+    fn into(self) -> u8 {
+        self.0
+    }
+}
 
 impl RawEntryType {
     pub(crate) fn new(byte: u8) -> Self {

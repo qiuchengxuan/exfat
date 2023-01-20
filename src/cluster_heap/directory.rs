@@ -1,38 +1,18 @@
 use core::mem;
-use core::mem::transmute;
 
 use alloc::rc::Rc;
 
-use super::clusters::SectorRef;
-use super::entry::with_context;
+use super::entry::{name_hash, with_context};
 use super::entry::{ClusterEntry, TouchOption};
+use super::entryset::EntrySet;
 use super::file::File;
 use crate::error::Error;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
-use crate::region::data::entryset::RawEntry;
+use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
+use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
-
-#[derive(Clone, Default)]
-pub struct EntrySet {
-    pub name: heapless::String<255>,
-    pub file_directory: FileDirectory,
-    pub stream_extension: Secondary<StreamExtension>,
-    pub(crate) sector_ref: SectorRef,
-    pub(crate) entry_index: usize,
-}
-
-impl EntrySet {
-    pub fn data_length(&self) -> u64 {
-        self.stream_extension.data_length.to_ne()
-    }
-
-    pub fn valid_data_length(&self) -> u64 {
-        let valid_data_length = self.stream_extension.custom_defined.valid_data_length;
-        valid_data_length.to_ne()
-    }
-}
 
 pub struct Directory<IO> {
     pub(crate) entry: ClusterEntry<IO>,
@@ -44,85 +24,126 @@ pub enum FileOrDirectory<IO> {
     Directory(Directory<IO>),
 }
 
-#[deasync::deasync]
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
-    /// walk_fn secondary parameter indicates whether entry is inuse,
-    /// return true if stop walking
-    pub async fn walk<H>(&mut self, mut walk_fn: H) -> Result<bool, Error<E>>
+    async fn walk_matches<F, H, R>(&mut self, f: F, mut h: H) -> Result<Option<R>, Error<E>>
     where
-        H: FnMut(&EntrySet, bool) -> bool,
+        F: Fn(&FileDirectory, &Secondary<StreamExtension>) -> bool,
+        H: FnMut(&EntrySet) -> Option<R>,
     {
-        let mut name = heapless::String::<255>::new();
-        let mut file_directory = FileDirectory::default();
-        let mut stream_extension = Secondary::<StreamExtension>::default();
+        let sector_size = 1 << self.entry.sector_size_shift;
         let mut sector_ref = self.entry.sector_ref;
-        let mut name_length: u8 = 0;
-        let mut secondary_remain: u8 = 0;
-        let mut sector = self.entry.io.read(sector_ref.id()).await?;
-        let (mut entryset_sector_ref, mut entry_index) = (self.entry.sector_ref, 0);
+        let mut index = 0;
+        let sector = self.entry.io.read(sector_ref.id()).await?;
+        let mut entries: &[[RawEntry; 16]] = unsafe { mem::transmute(sector) };
+        let mut file_directory: FileDirectory;
+        let mut stream_extension: Secondary<StreamExtension>;
         loop {
-            let f = |block| unsafe { transmute::<&[u8; 512], &[RawEntry; 16]>(block) }.iter();
-            for (index, entry) in sector.iter().map(f).flatten().enumerate() {
-                let entry_type = RawEntryType::new(entry[0]);
-                if entry_type.is_end_of_directory() {
-                    return Ok(true);
-                }
-                match entry_type.entry_type() {
-                    Ok(EntryType::FileDirectory) => {
-                        file_directory = unsafe { mem::transmute(*entry) };
-                        (entryset_sector_ref, entry_index) = (sector_ref, index);
-                        secondary_remain = file_directory.secondary_count;
-                    }
-                    Ok(EntryType::StreamExtension) => {
-                        stream_extension = unsafe { mem::transmute(*entry) };
-                        secondary_remain -= 1;
-                        name_length = stream_extension.custom_defined.name_length;
-                    }
-                    Ok(EntryType::Filename) => {
-                        let entry: &Filename = unsafe { mem::transmute(entry) };
-                        for ch in entry.filename {
-                            let ch = unsafe { char::from_u32_unchecked(ch.to_ne() as u32) };
-                            name.push(ch).ok();
-                        }
-                        secondary_remain -= 1;
-                    }
-                    _ => continue,
-                }
-                if secondary_remain > 0 {
+            let entry = &entries[index / 16][index % 16];
+            let entry_type = RawEntryType::new(entry[0]);
+            if entry_type.is_end_of_directory() {
+                break;
+            }
+            match entry_type.entry_type() {
+                Ok(EntryType::FileDirectory) => (),
+                Ok(_) => {
+                    index += 1;
                     continue;
                 }
-                name.truncate(name_length as usize);
-                let entry_set = EntrySet {
-                    name: name.clone(),
-                    file_directory,
-                    stream_extension: stream_extension.clone(),
-                    sector_ref: entryset_sector_ref,
-                    entry_index,
-                };
-                if walk_fn(&entry_set, entry_type.in_use()) {
-                    return Ok(false);
+                Err(t) => {
+                    warn!("Unexpected entry type {}", t);
+                    return Err(Error::Generic("Unexpected entry type"));
                 }
-                name.truncate(0);
+            };
+            file_directory = unsafe { mem::transmute(*entry) };
+            let entryset_sector_ref = sector_ref;
+            let entryset_index = index;
+            let mut secondary_remain = file_directory.secondary_count - 1;
+            index += 1;
+            if (index * ENTRY_SIZE) >= sector_size {
+                index -= sector_size / ENTRY_SIZE;
+                sector_ref = self.entry.next(sector_ref).await?;
+                let sector = self.entry.io.read(sector_ref.id()).await?;
+                entries = unsafe { mem::transmute(sector) }
             }
-            sector_ref = self.entry.next(sector_ref).await?;
-            sector = self.entry.io.read(sector_ref.id()).await?;
+            let entry = &entries[index / 16][index % 16];
+            stream_extension = unsafe { mem::transmute(*entry) };
+            if !f(&file_directory, &stream_extension) {
+                index += secondary_remain as usize;
+                continue;
+            }
+            let mut entry_name = heapless::String::<255>::new();
+            while secondary_remain > 0 {
+                secondary_remain -= 1;
+                index += 1;
+                if (index * ENTRY_SIZE) >= sector_size {
+                    index -= sector_size / ENTRY_SIZE;
+                    sector_ref = self.entry.next(sector_ref).await?;
+                    let sector = self.entry.io.read(sector_ref.id()).await?;
+                    entries = unsafe { mem::transmute(sector) }
+                }
+                let entry: &Filename = unsafe { mem::transmute(&entries[index / 16][index % 16]) };
+                for ch in entry.filename {
+                    let ch = unsafe { char::from_u32_unchecked(ch.to_ne() as u32) };
+                    entry_name.push(ch).ok();
+                }
+            }
+            entry_name.truncate(stream_extension.custom_defined.name_length as usize);
+            let entry_set = EntrySet {
+                name: entry_name,
+                file_directory,
+                stream_extension,
+                sector_ref: entryset_sector_ref,
+                entry_index: entryset_index,
+            };
+            if let Some(retval) = h(&entry_set) {
+                return Ok(Some(retval));
+            }
         }
+        Ok(None)
     }
 
-    pub async fn find<H>(&mut self, find_fn: H) -> Result<Option<EntrySet>, Error<E>>
+    /// Including not inuse entries
+    pub async fn walk<H>(&mut self, mut h: H) -> Result<Option<EntrySet>, Error<E>>
     where
-        H: Fn(&EntrySet, bool) -> bool,
+        H: FnMut(&EntrySet) -> bool,
     {
-        let mut found: Option<EntrySet> = None;
-        self.walk(|entry_set, in_use| -> bool {
-            if find_fn(entry_set, in_use) {
-                found = Some(entry_set.clone());
-                return true;
-            }
-            false
-        })
-        .await?;
-        Ok(found)
+        self.walk_matches(
+            |_, _| true,
+            |entryset| {
+                if h(entryset) {
+                    Some(entryset.clone())
+                } else {
+                    None
+                }
+            },
+        )
+    }
+
+    pub async fn find(&mut self, name: &str) -> Result<Option<EntrySet>, Error<E>> {
+        let upcase_table = self.upcase_table.clone();
+        let hash = name_hash(&self.upcase_table.to_upper(name));
+        self.walk_matches(
+            |file_directory, stream_extension| -> bool {
+                let entry_type = file_directory.entry_type;
+                if !entry_type.in_use() {
+                    return false;
+                }
+                let name_length = stream_extension.custom_defined.name_length;
+                let name_hash = stream_extension.custom_defined.name_hash.to_ne();
+                if name_length as usize != name.len() || name_hash != hash {
+                    return false;
+                }
+                true
+            },
+            |entryset| {
+                if upcase_table.equals(name, &entryset.name) {
+                    Some(entryset.clone())
+                } else {
+                    None
+                }
+            },
+        )
     }
 
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
@@ -131,23 +152,22 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
     }
 
     pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<IO>, Error<E>> {
-        let upcase_table = self.upcase_table.clone();
-        let future = self.find(|entry_set, in_use| -> bool {
-            in_use && upcase_table.equals(name, entry_set.name.as_str())
-        });
-        let entry_set = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
-        let stream_extension = &entry_set.stream_extension;
-        let cluster_id = stream_extension.first_cluster.to_ne();
-        let sector_ref = self.entry.sector_ref.new(cluster_id.into(), 0);
-        if !with_context!(self.entry.context).add_entry(sector_ref.cluster_id) {
+        debug!("Open file {}", name);
+        let future = self.find(name);
+        let entryset = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
+        let mut context = with_context!(self.entry.context);
+        if !context.opened_entries.add(entryset.id()) {
             return Err(Error::AlreadyOpen);
         }
+        let stream_extension = &entryset.stream_extension;
+        let cluster_id = stream_extension.first_cluster.to_ne();
+        let sector_ref = self.entry.sector_ref.new(cluster_id.into(), 0);
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
             context: self.entry.context.clone(),
             fat_info: self.entry.fat_info,
-            meta: entry_set.sector_ref,
-            entry_index: entry_set.entry_index,
+            meta: entryset.sector_ref,
+            entry_index: entryset.entry_index,
             sector_ref,
             sector_size_shift: self.entry.sector_size_shift,
             last_cluster_id: 0.into(),
@@ -155,22 +175,65 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
             capacity: stream_extension.data_length.to_ne(),
             closed: false,
         };
-        if entry_set.file_directory.file_attributes().directory() > 0 {
+        trace!("Cluster id {}", cluster_id);
+        if entryset.file_directory.file_attributes().directory() > 0 {
             Ok(FileOrDirectory::Directory(Directory {
                 entry,
                 upcase_table: self.upcase_table.clone(),
             }))
         } else {
             let size = entry.length;
-            Ok(FileOrDirectory::File(File {
-                entry,
-                sector_ref,
-                cursor: 0,
-                size,
-            }))
+            Ok(FileOrDirectory::File(File { entry, sector_ref, cursor: 0, size }))
         }
     }
 
+    pub async fn delete(&mut self, name: &str) -> Result<(), Error<E>> {
+        debug!("Delete file {}", name);
+        let future = self.find(name);
+        let entryset = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
+
+        let mut sector_id = entryset.sector_ref.id();
+        let secondary_count = entryset.file_directory.secondary_count as usize;
+        let last_index = entryset.entry_index + secondary_count;
+        let sector_size = 1 << self.entry.sector_size_shift;
+        let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
+            true => self.entry.next(entryset.sector_ref).await?.id(),
+            false => sector_id,
+        };
+
+        let mut context = with_context!(self.entry.context);
+        if !context.opened_entries.add(entryset.id()) {
+            return Err(Error::AlreadyOpen);
+        }
+
+        let mut offset = entryset.entry_index * ENTRY_SIZE;
+        let io = &mut self.entry.io;
+        io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
+        offset = (offset + ENTRY_SIZE) % sector_size;
+        if offset == 0 {
+            sector_id = next_sector_id;
+        }
+        io.write(sector_id, offset, &[EntryType::StreamExtension.into(); 1]).await?;
+        for _ in 0..(secondary_count - 1) {
+            offset = (offset + ENTRY_SIZE) % sector_size;
+            if offset == 0 {
+                sector_id = next_sector_id;
+            }
+            io.write(sector_id, offset, &[EntryType::Filename.into(); 1]).await?;
+        }
+
+        let stream_extension = &entryset.stream_extension;
+        let cluster_id: ClusterID = stream_extension.first_cluster.to_ne().into();
+        let chain = !entryset.stream_extension.general_secondary_flags.not_fat_chain();
+        if cluster_id.valid() {
+            context.allocation_bitmap.release(cluster_id, chain).await?;
+        }
+        io.flush().await?;
+        context.opened_entries.remove(entryset.id());
+        Ok(())
+    }
+
+    #[cfg(feature = "async")]
     pub async fn close(self) -> Result<(), Error<E>> {
         self.entry.close().await
     }

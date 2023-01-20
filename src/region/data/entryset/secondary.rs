@@ -3,11 +3,20 @@ use core::fmt::Debug;
 use super::super::entry_type::RawEntryType;
 use crate::endian::Little as LE;
 
+#[derive(Copy, Clone, Debug, Default)]
+pub struct GeneralSecondaryFlags(u8);
+
+impl GeneralSecondaryFlags {
+    pub fn not_fat_chain(&self) -> bool {
+        (self.0 & 0b10) > 0
+    }
+}
+
 #[derive(Default)]
 #[repr(C, packed(1))]
 pub struct Secondary<T: Default> {
     pub(crate) entry_type: RawEntryType,
-    general_secondary_flags: u8,
+    pub(crate) general_secondary_flags: GeneralSecondaryFlags,
     pub(crate) custom_defined: T,
     pub(crate) first_cluster: LE<u32>,
     pub(crate) data_length: LE<u64>,

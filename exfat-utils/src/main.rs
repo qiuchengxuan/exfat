@@ -1,6 +1,7 @@
 mod cat;
 pub(crate) mod filepath;
 mod list;
+mod remove;
 mod touch;
 mod truncate;
 
@@ -41,9 +42,18 @@ struct Truncate {
     size: u64,
 }
 
+#[derive(Debug, clap::Args)]
+struct Remove {
+    /// Block device or file that formatted with ExFAT
+    device: String,
+    /// Specify path to delete
+    path: String,
+}
+
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     /// List file and directory in specified path
+    #[clap(name = "ls")]
     List(List),
     /// Concatenate file and print on the standard output
     Cat(Cat),
@@ -51,24 +61,38 @@ enum Action {
     Touch(Touch),
     /// Truncate file
     Truncate(Truncate),
+    /// Remove file
+    #[clap(name = "rm")]
+    Remove(Remove),
 }
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    #[clap(short, long)]
+    quiet: bool,
+    #[clap(short, action = clap::ArgAction::Count)]
+    verbosity: u8,
     #[clap(subcommand)]
     action: Action,
 }
 
 fn main() {
-    log::set_max_level(log::LevelFilter::Debug);
-    simple_log::console("debug").ok();
     let args = Args::parse();
+    let level = match (args.quiet, args.verbosity) {
+        (true, _) => log::LevelFilter::Off,
+        (_, 0) => log::LevelFilter::Info,
+        (_, 1) => log::LevelFilter::Debug,
+        (_, _) => log::LevelFilter::Trace,
+    };
+    log::set_max_level(level);
+    env_logger::builder().filter(None, level).target(env_logger::Target::Stdout).init();
     let result = match args.action {
         Action::List(args) => list::list(&args.device, &args.path),
         Action::Cat(args) => cat::cat(&args.device, &args.path),
         Action::Touch(args) => touch::touch(&args.device, &args.path),
         Action::Truncate(args) => truncate::truncate(&args.device, &args.path, args.size),
+        Action::Remove(args) => remove::remove(&args.device, &args.path),
     };
     if let Some(error) = result.err() {
         eprintln!("{}", error);
