@@ -1,9 +1,10 @@
+use core::fmt::Debug;
 use core::mem;
 
 use alloc::rc::Rc;
 
 use super::entry::{name_hash, with_context};
-use super::entry::{ClusterEntry, TouchOption};
+use super::entry::{ClusterEntry, Meta, TouchOption};
 use super::entryset::EntrySet;
 use super::file::File;
 use crate::error::Error;
@@ -14,18 +15,18 @@ use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
 use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
 
-pub struct Directory<IO> {
+pub struct Directory<E: Debug, IO: crate::io::IO<Error = E>> {
     pub(crate) entry: ClusterEntry<IO>,
     pub(crate) upcase_table: Rc<UpcaseTable>,
 }
 
-pub enum FileOrDirectory<IO> {
-    File(File<IO>),
-    Directory(Directory<IO>),
+pub enum FileOrDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
+    File(File<E, IO>),
+    Directory(Directory<E, IO>),
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
+impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
     async fn walk_matches<F, H, R>(&mut self, f: F, mut h: H) -> Result<Option<R>, Error<E>>
     where
         F: Fn(&FileDirectory, &Secondary<StreamExtension>) -> bool,
@@ -40,7 +41,7 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         let mut stream_extension: Secondary<StreamExtension>;
         loop {
             let entry = &entries[index / 16][index % 16];
-            let entry_type = RawEntryType::new(entry[0]);
+            let entry_type: RawEntryType = entry[0].into();
             if entry_type.is_end_of_directory() {
                 break;
             }
@@ -103,7 +104,7 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         Ok(None)
     }
 
-    /// Including not inuse entries
+    /// Walk through directory, including not inuse entries
     pub async fn walk<H>(&mut self, mut h: H) -> Result<Option<EntrySet>, Error<E>>
     where
         H: FnMut(&EntrySet) -> bool,
@@ -118,8 +119,10 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                 }
             },
         )
+        .await
     }
 
+    /// Find a file or directory matching specified name
     pub async fn find(&mut self, name: &str) -> Result<Option<EntrySet>, Error<E>> {
         let upcase_table = self.upcase_table.clone();
         let hash = name_hash(&self.upcase_table.to_upper(name));
@@ -144,14 +147,17 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
                 }
             },
         )
+        .await
     }
 
+    /// Change current directory timestamp
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
         self.entry.touch(datetime, option).await?;
         self.entry.io.flush().await
     }
 
-    pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<IO>, Error<E>> {
+    /// Open a file or directory
+    pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<E, IO>, Error<E>> {
         debug!("Open file {}", name);
         let future = self.find(name);
         let entryset = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
@@ -159,36 +165,31 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         if !context.opened_entries.add(entryset.id()) {
             return Err(Error::AlreadyOpen);
         }
-        let stream_extension = &entryset.stream_extension;
-        let cluster_id = stream_extension.first_cluster.to_ne();
+        let cluster_id = entryset.stream_extension.first_cluster.to_ne();
+        let file_attributes = entryset.file_directory.file_attributes();
         let sector_ref = self.entry.sector_ref.new(cluster_id.into(), 0);
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
             context: self.entry.context.clone(),
             fat_info: self.entry.fat_info,
-            meta: entryset.sector_ref,
-            entry_index: entryset.entry_index,
+            meta: Some(Meta::new(entryset)),
             sector_ref,
             sector_size_shift: self.entry.sector_size_shift,
-            last_cluster_id: 0.into(),
-            length: stream_extension.custom_defined.valid_data_length.to_ne(),
-            capacity: stream_extension.data_length.to_ne(),
-            closed: false,
         };
         trace!("Cluster id {}", cluster_id);
-        if entryset.file_directory.file_attributes().directory() > 0 {
+        if file_attributes.directory() > 0 {
             Ok(FileOrDirectory::Directory(Directory {
                 entry,
                 upcase_table: self.upcase_table.clone(),
             }))
         } else {
-            let size = entry.length;
-            Ok(FileOrDirectory::File(File { entry, sector_ref, cursor: 0, size }))
+            Ok(FileOrDirectory::File(File::new(entry, sector_ref)))
         }
     }
 
+    /// Delete a file or directory
     pub async fn delete(&mut self, name: &str) -> Result<(), Error<E>> {
-        debug!("Delete file {}", name);
+        debug!("Delete file or directory {}", name);
         let future = self.find(name);
         let entryset = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
 
@@ -233,8 +234,23 @@ impl<E, IO: crate::io::IO<Error = E>> Directory<IO> {
         Ok(())
     }
 
-    #[cfg(feature = "async")]
-    pub async fn close(self) -> Result<(), Error<E>> {
+    #[cfg(all(feature = "async", not(feature = "std")))]
+    /// `no_std` async only which must be explicitly called
+    pub async fn close(mut self) -> Result<(), Error<E>> {
         self.entry.close().await
+    }
+}
+
+#[cfg(any(not(feature = "async"), feature = "std"))]
+impl<E: core::fmt::Debug, IO: crate::io::IO<Error = E>> Drop for Directory<E, IO> {
+    fn drop(&mut self) {
+        match () {
+            #[cfg(all(feature = "async", not(feature = "std")))]
+            () => panic!("Close must be explicit called"),
+            #[cfg(all(feature = "async", feature = "std"))]
+            () => async_std::task::block_on(self.entry.close()).unwrap(),
+            #[cfg(not(feature = "async"))]
+            () => self.entry.close().unwrap(),
+        }
     }
 }

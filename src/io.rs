@@ -16,7 +16,7 @@ pub(crate) fn flatten(sector: &[Sector]) -> &[u8] {
 #[cfg_attr(feature = "async", async_trait)]
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 pub trait IO: Clone {
-    type Error;
+    type Error: core::fmt::Debug;
     /// Default to 512
     fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
     async fn read<'a>(&'a mut self, id: SectorID) -> Result<&'a [Sector], Self::Error>;

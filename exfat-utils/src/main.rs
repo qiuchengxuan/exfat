@@ -1,3 +1,4 @@
+mod append;
 mod cat;
 pub(crate) mod filepath;
 mod list;
@@ -33,6 +34,16 @@ struct Touch {
 }
 
 #[derive(Debug, clap::Args)]
+struct Append {
+    /// Block device or file that formatted with ExFAT
+    device: String,
+    /// Specify path to touch
+    path: String,
+    /// Specify file to append
+    file: String,
+}
+
+#[derive(Debug, clap::Args)]
 struct Truncate {
     /// Block device or file that formatted with ExFAT
     device: String,
@@ -59,6 +70,8 @@ enum Action {
     Cat(Cat),
     /// Change file timestamps
     Touch(Touch),
+    /// Append to file
+    Append(Append),
     /// Truncate file
     Truncate(Truncate),
     /// Remove file
@@ -91,6 +104,7 @@ fn main() {
         Action::List(args) => list::list(&args.device, &args.path),
         Action::Cat(args) => cat::cat(&args.device, &args.path),
         Action::Touch(args) => touch::touch(&args.device, &args.path),
+        Action::Append(args) => append::append(&args.device, &args.path, &args.file),
         Action::Truncate(args) => truncate::truncate(&args.device, &args.path, args.size),
         Action::Remove(args) => remove::remove(&args.device, &args.path),
     };

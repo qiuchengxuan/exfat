@@ -1,4 +1,4 @@
-use core::fmt::{Display, Formatter, Result};
+use core::fmt::{Debug, Display, Formatter, Result};
 
 use crate::types::ClusterID;
 
@@ -21,11 +21,11 @@ pub enum Error<E> {
     InvalidInput(&'static str),
 }
 
-impl<E: Display> Display for Error<E> {
+impl<E: Debug> Debug for Error<E> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             Self::Generic(s) => write!(f, "Generic error({})", s),
-            Self::IO(e) => write!(f, "IO({})", e),
+            Self::IO(e) => write!(f, "IO({:?})", e),
             Self::NotExFAT => write!(f, "Not ExFAT filesystem"),
             Self::TexFATNotSupported => write!(f, "TexFAT not supported"),
             Self::Checksum => write!(f, "Checksum mismatch"),
@@ -39,5 +39,11 @@ impl<E: Display> Display for Error<E> {
             Self::AlreadyOpen => write!(f, "File or directory already open"),
             Self::InvalidInput(s) => write!(f, "Invalid input: {}", s),
         }
+    }
+}
+
+impl<E: Debug> Display for Error<E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{:?}", self)
     }
 }

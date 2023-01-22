@@ -4,7 +4,10 @@ use exfat::error::Error;
 use exfat::Directory;
 use exfat::FileOrDirectory;
 
-pub fn open<IO>(mut dir: Directory<IO>, path: &str) -> Result<FileOrDirectory<IO>, Error<io::Error>>
+pub fn open<IO>(
+    mut dir: Directory<io::Error, IO>,
+    path: &str,
+) -> Result<FileOrDirectory<io::Error, IO>, Error<io::Error>>
 where
     IO: exfat::io::IO<Error = io::Error>,
 {

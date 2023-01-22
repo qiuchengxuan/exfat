@@ -1,3 +1,4 @@
+use core::fmt::Debug;
 use core::mem;
 
 use alloc::rc::Rc;
@@ -20,14 +21,14 @@ use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::RawEntry;
 use crate::sync::Mutex;
 
-pub struct RootDirectory<IO> {
-    directory: Directory<IO>,
+pub struct RootDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
+    directory: Directory<E, IO>,
     upcase_table: region::data::UpcaseTable,
     volumn_label: Option<heapless::String<11>>,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
+impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
     pub(crate) async fn new(
         mut io: IOWrapper<IO>,
         fat_info: fat::Info,
@@ -40,7 +41,7 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         let sector = io.read(sector_ref.id()).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
-            match RawEntryType::new(entry[0]).entry_type() {
+            match RawEntryType::from(entry[0]).entry_type() {
                 Ok(EntryType::AllocationBitmap) => {
                     let bitmap: &region::data::AllocationBitmap = unsafe { mem::transmute(entry) };
                     allocation_bitmap = Some(*bitmap)
@@ -77,14 +78,9 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
                 io,
                 context,
                 fat_info,
-                meta: Default::default(),
-                entry_index: 0,
+                meta: None,
                 sector_ref,
                 sector_size_shift,
-                last_cluster_id: 0.into(),
-                length: 0,
-                capacity: 0,
-                closed: false,
             },
             upcase_table: Rc::new((*array).into()),
         };
@@ -120,7 +116,7 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
         self.volumn_label.as_ref().map(|label| label.as_str())
     }
 
-    pub async fn open(&mut self) -> Result<Directory<IO>, Error<E>> {
+    pub async fn open(&mut self) -> Result<Directory<E, IO>, Error<E>> {
         let entry = &mut self.directory.entry;
         let mut context = with_context!(entry.context);
         if !context.opened_entries.add(entry.id()) {
@@ -132,4 +128,4 @@ impl<E, IO: crate::io::IO<Error = E>> RootDirectory<IO> {
     pub fn close(self) {}
 }
 
-unsafe impl<IO: Send> Send for RootDirectory<IO> {}
+unsafe impl<E: Debug, IO: Send + crate::io::IO<Error = E>> Send for RootDirectory<E, IO> {}

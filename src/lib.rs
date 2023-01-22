@@ -1,3 +1,8 @@
+//! # embedded-exfat
+//!
+//! > An ExFAT Library in rust mainly focusing on `no_std` embedded system with async support
+//!
+//! `alloc` is mandatory for this crate, although memory allocation is minimized, 256B for Allocation bitmap and 12B for each file or directory, including root directory.
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 extern crate alloc;
@@ -18,6 +23,7 @@ pub(crate) mod sync;
 pub mod types;
 mod upcase_table;
 
+use core::fmt::Debug;
 use core::mem;
 
 use memoffset::offset_of;
@@ -37,7 +43,7 @@ pub struct ExFAT<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
+impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
     pub async fn new(mut io: IO) -> Result<Self, Error<E>> {
         let blocks = io.read(0.into()).await.map_err(|e| Error::IO(e))?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
@@ -113,7 +119,7 @@ impl<E, IO: io::IO<Error = E>> ExFAT<IO> {
         self.serial_number
     }
 
-    pub async fn root_directory(&mut self) -> Result<RootDir<IO>, Error<E>> {
+    pub async fn root_directory(&mut self) -> Result<RootDir<E, IO>, Error<E>> {
         let io = self.io.clone();
         RootDir::new(io, self.fat_info, self.sector_ref, self.sector_size_shift).await
     }

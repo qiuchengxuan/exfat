@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use super::clusters::SectorRef;
 use super::entry::{ClusterEntry, TouchOption};
 use crate::error::Error;
@@ -10,24 +12,37 @@ pub enum SeekFrom {
     Current(i64),
 }
 
-pub struct File<IO> {
+pub struct File<E: Debug, IO: crate::io::IO<Error = E>> {
     pub(crate) entry: ClusterEntry<IO>,
     pub(crate) sector_ref: SectorRef,
     pub(crate) size: u64,
-    pub(crate) cursor: u64,
+    cursor: u64,
+    dirty: bool,
+}
+
+impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
+    pub(crate) fn new(entry: ClusterEntry<IO>, sector_ref: SectorRef) -> Self {
+        let size = entry.meta.as_ref().map(|meta| meta.length()).unwrap_or_default();
+        Self { entry, sector_ref, size, cursor: 0, dirty: false }
+    }
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E, IO: crate::io::IO<Error = E>> File<IO> {
+impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     pub fn size(&self) -> u64 {
         self.size
     }
 
+    /// Change file timestamp, will not take effect immediately untill flush or sync_all called
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
         self.entry.touch(datetime, option).await?;
         self.entry.io.flush().await
     }
 
+    /// Read some bytes
+    /// If sector remain bytes fits in buf,
+    /// all remain bytes will be read,
+    /// Otherwise a sector size or a buf size will be read.
     pub async fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<E>> {
         if self.cursor == self.size {
             return Err(Error::EOF);
@@ -46,6 +61,7 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
             if buf.len() == sector_remain {
                 self.sector_ref = self.entry.next(self.sector_ref).await?;
             }
+            self.cursor += buf.len() as u64;
             return Ok(buf.len());
         }
         buf[..sector_remain].copy_from_slice(&bytes[offset..]);
@@ -61,57 +77,81 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
         let sector = self.entry.io.read(sector_id).await?;
         let bytes = crate::io::flatten(sector);
         remain.copy_from_slice(&bytes[..remain.len()]);
+        self.cursor += buf.len() as u64;
         Ok(buf.len())
     }
 
+    /// Write some bytes
+    /// If bytes length fits in current sector remain size,
+    /// all bytes will be successfully written,
+    /// Otherwise a sector size will be written.
+    ///
+    /// Write operation will not change file metadata immediately until
+    /// flush or sync_all called.
+    ///
+    /// Write operation will not change file modify timestamp
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, Error<E>> {
         if bytes.len() == 0 {
             return Ok(0);
         }
-        let mut remain = bytes;
-        let sector_id = self.sector_ref.id();
+        self.dirty = true;
         let sector_size = 1 << self.entry.sector_size_shift;
         let offset = self.cursor as usize % sector_size;
-        let sector_remain = sector_size - offset;
+        let capacity = self.entry.meta.as_ref().unwrap().capacity();
+        let sector_remain = if capacity > 0 { sector_size - offset } else { 0 };
         if sector_remain > 0 {
-            if bytes.len() <= sector_remain {
-                self.entry.io.write(sector_id, offset, bytes).await?;
-                self.cursor += bytes.len() as u64;
-                return Ok(bytes.len());
-            }
-            let chunk = &bytes[..sector_remain];
-            self.entry.io.write(sector_id, offset, chunk).await?;
-            self.cursor += sector_remain as u64;
-            remain = &bytes[sector_remain..];
-        }
-        while remain.len() > 0 {
-            if self.cursor < self.entry.capacity {
-                self.sector_ref = self.entry.next(self.sector_ref).await?;
-            } else {
-                let cluster_id = self.entry.allocate().await?;
-                self.sector_ref = self.sector_ref.new(cluster_id, 0);
-            }
+            let length = core::cmp::min(bytes.len(), sector_remain);
+            let chunk = &bytes[..length];
             let sector_id = self.sector_ref.id();
-            let length = core::cmp::min(remain.len(), sector_size);
-            let chunk = &remain[..length];
-            self.entry.io.write(sector_id, 0, chunk).await?;
-            remain = &remain[length..];
+            self.entry.io.write(sector_id, offset, chunk).await?;
+            self.cursor += length as u64;
+            self.size = core::cmp::max(self.cursor, self.size);
+            return Ok(sector_remain);
         }
-        self.cursor += (bytes.len() - remain.len()) as u64;
-        if self.cursor > self.size {
-            self.size = self.cursor;
+        if self.cursor < capacity {
+            self.sector_ref = self.entry.next(self.sector_ref).await?;
+        } else {
+            let cluster_id = self.entry.allocate().await?;
+            self.sector_ref = self.sector_ref.new(cluster_id, 0);
         }
-        Ok(bytes.len() - remain.len())
+        let sector_id = self.sector_ref.id();
+        let length = core::cmp::min(bytes.len(), sector_size);
+        let chunk = &bytes[..length];
+        self.entry.io.write(sector_id, 0, chunk).await?;
+        self.cursor += length as u64;
+        self.size = core::cmp::max(self.cursor, self.size);
+        Ok(length)
     }
 
+    pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error<E>> {
+        let written = self.write(bytes).await?;
+        for chunk in bytes[written..].chunks(1 << self.entry.sector_size_shift) {
+            self.write(chunk).await?;
+        }
+        Ok(())
+    }
+
+    /// Flush data write operations
+    pub async fn sync_data(&mut self) -> Result<(), Error<E>> {
+        if self.dirty {
+            self.entry.io.flush().await?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+
+    /// Flush data write operations and metadata changes
+    pub async fn sync_all(&mut self) -> Result<(), Error<E>> {
+        self.sync_data().await?;
+        self.entry.sync().await
+    }
+
+    /// Alias of sync_all
     pub async fn flush(&mut self) -> Result<(), Error<E>> {
-        if self.size != self.entry.length {
-            self.entry.length = self.size;
-            self.entry.update_length(self.size).await?;
-        }
-        self.entry.io.flush().await
+        self.sync_all().await
     }
 
+    /// Change current cursor position
     pub async fn seek(&mut self, seek_from: SeekFrom) -> Result<u64, Error<E>> {
         let option = match seek_from {
             SeekFrom::Start(cursor) => i64::try_from(cursor).ok(),
@@ -140,6 +180,7 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
         Ok(cursor)
     }
 
+    /// Shrink current file size
     pub async fn truncate(&mut self, size: u64) -> Result<(), Error<E>> {
         if size > self.size {
             return Err(Error::InvalidInput("Size larger than file size"));
@@ -148,11 +189,36 @@ impl<E, IO: crate::io::IO<Error = E>> File<IO> {
             self.cursor = size;
             self.seek(SeekFrom::Start(size)).await?;
         }
+        self.entry.meta.as_mut().unwrap().set_length(size);
         self.size = size;
-        self.entry.update_length(size).await
+        Ok(())
     }
 
-    pub async fn close(self) -> Result<(), Error<E>> {
+    #[cfg(all(feature = "async", not(feature = "std")))]
+    /// `no_std` async only which must be explicitly called
+    pub async fn close(mut self) -> Result<(), Error<E>> {
+        self.flush().await?;
         self.entry.close().await
+    }
+}
+
+#[cfg(any(not(feature = "async"), feature = "std"))]
+impl<E: core::fmt::Debug, IO: crate::io::IO<Error = E>> Drop for File<E, IO> {
+    fn drop(&mut self) {
+        match () {
+            #[cfg(all(feature = "async", not(feature = "std")))]
+            () => panic!("Close must be explicit called"),
+            #[cfg(all(feature = "async", feature = "std"))]
+            () => async_std::task::block_on(async {
+                self.flush().await?;
+                self.entry.close().await
+            })
+            .unwrap(),
+            #[cfg(not(feature = "async"))]
+            () => {
+                self.flush().unwrap();
+                self.entry.close().unwrap();
+            }
+        }
     }
 }

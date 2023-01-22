@@ -1,13 +1,13 @@
 use alloc::sync::Arc;
-
-use memoffset::offset_of;
+use core::mem::transmute;
 
 use super::clusters::SectorRef;
 use super::context::Context;
-use super::entryset::EntryID;
+use super::entryset::{EntryID, EntrySet};
 use crate::error::Error;
 use crate::fat;
 use crate::io::IOWrapper;
+use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
@@ -21,7 +21,7 @@ macro_rules! with_context {
         match () {
             #[cfg(feature = "async")]
             _ => $context.lock().await,
-            #[cfg(all(not(feature = "async")))]
+            #[cfg(not(feature = "async"))]
             _ => $context.lock().unwrap(),
         }
     };
@@ -29,13 +29,88 @@ macro_rules! with_context {
 
 pub(crate) use with_context;
 
-pub(crate) fn name_hash(name: &str) -> u16 {
-    let mut hash = 0;
-    for ch in name.chars() {
-        hash = if hash & 1 > 0 { 0x8000 } else { 0 } + (hash >> 1) + ch as u16;
-        hash = if hash & 1 > 0 { 0x8000 } else { 0 } + (hash >> 1) + ((ch as u32) >> 16) as u16;
+pub(crate) struct Checksum(u16);
+
+impl Checksum {
+    pub(crate) fn new() -> Self {
+        Self(0)
     }
-    hash
+
+    pub(crate) fn write(&mut self, value: u16) {
+        self.0 = if self.0 & 1 > 0 { 0x8000 } else { 0 } + (self.0 >> 1) + value
+    }
+
+    pub(crate) fn sum(&self) -> u16 {
+        self.0
+    }
+}
+
+pub(crate) fn name_hash(name: &str) -> u16 {
+    let mut checksum = Checksum::new();
+    for ch in name.chars() {
+        checksum.write(ch as u16);
+        checksum.write(((ch as u32) >> 16) as u16);
+    }
+    checksum.sum()
+}
+
+#[derive(Clone)]
+pub(crate) struct Meta {
+    pub name: heapless::String<255>,
+    pub file_directory: FileDirectory,
+    pub stream_extension: Secondary<StreamExtension>,
+    pub sector_ref: SectorRef,
+    pub entry_index: usize, // Within sector
+    pub dirty: bool,
+}
+
+impl Meta {
+    pub fn new(entryset: EntrySet) -> Self {
+        let EntrySet { name, file_directory, stream_extension, sector_ref, entry_index } = entryset;
+        Self { name, file_directory, stream_extension, sector_ref, entry_index, dirty: false }
+    }
+
+    pub fn length(&self) -> u64 {
+        self.stream_extension.custom_defined.valid_data_length.to_ne()
+    }
+
+    pub fn capacity(&self) -> u64 {
+        self.stream_extension.data_length.to_ne()
+    }
+
+    pub fn set_length(&mut self, length: u64) {
+        self.stream_extension.custom_defined.valid_data_length = length.into();
+        self.update_checksum();
+        self.dirty = true;
+    }
+
+    pub fn update_checksum(&mut self) {
+        let mut checksum = Checksum::new();
+        let array: &[u8; ENTRY_SIZE] = unsafe { transmute(&self.file_directory) };
+        for (i, &value) in array.iter().enumerate() {
+            if i == 2 || i == 3 {
+                continue;
+            }
+            checksum.write(value as u16);
+        }
+        let array: &[u8; ENTRY_SIZE] = unsafe { transmute(&self.stream_extension) };
+        for &value in array.iter() {
+            checksum.write(value as u16);
+        }
+        let entry_type = RawEntryType::new(EntryType::Filename, true);
+        for (i, ch) in self.name.chars().enumerate() {
+            if i % 15 == 0 {
+                checksum.write(u8::from(entry_type) as u16);
+                checksum.write(0);
+            }
+            checksum.write(ch as u8 as u16);
+            checksum.write(ch as u16 >> 8);
+        }
+        for _ in 0..(15 - self.name.len() % 15) * 2 {
+            checksum.write(0);
+        }
+        self.file_directory.set_checksum = checksum.sum().into();
+    }
 }
 
 #[derive(Clone)]
@@ -43,19 +118,17 @@ pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
     pub context: Arc<Mutex<Context<IO>>>,
     pub fat_info: fat::Info,
-    pub meta: SectorRef,
-    pub entry_index: usize, // Within sector
+    pub meta: Option<Meta>, // None for root directory
     pub sector_ref: SectorRef,
     pub sector_size_shift: u8,
-    pub last_cluster_id: ClusterID,
-    pub length: u64,
-    pub capacity: u64,
-    pub closed: bool,
 }
 
 impl<IO> ClusterEntry<IO> {
     pub(crate) fn id(&self) -> EntryID {
-        EntryID { sector_id: self.sector_ref.id(), index: self.entry_index }
+        match self.meta.as_ref() {
+            Some(meta) => EntryID { sector_id: meta.sector_ref.id(), index: meta.entry_index },
+            None => EntryID { sector_id: self.sector_ref.id(), index: 0 },
+        }
     }
 }
 
@@ -74,7 +147,7 @@ impl Default for TouchOption {
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     pub fn cluster_size_shift(&self) -> u8 {
-        self.sector_size_shift + self.meta.sectors_per_cluster_shift
+        self.sector_size_shift + self.sector_ref.sectors_per_cluster_shift
     }
 
     pub async fn next(&mut self, sector_ref: SectorRef) -> Result<SectorRef, Error<E>> {
@@ -91,122 +164,66 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     }
 
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
-        let index = self.entry_index;
-        let sector_id = self.meta.id();
-        let sector = self.io.read(sector_id).await?;
-        let entries: &[[RawEntry; 16]] = unsafe { core::mem::transmute(sector) };
-        let mut raw_entry = entries[index / 16][index % 16];
-        let file_directory: &mut FileDirectory = unsafe { core::mem::transmute(&mut raw_entry) };
+        let meta = self.meta.as_mut().ok_or(Error::InvalidInput("Not applicable for root dir"))?;
         if option.access {
-            file_directory.update_last_accessed_timestamp(datetime);
+            meta.file_directory.update_last_accessed_timestamp(datetime);
         }
         if option.modified {
-            file_directory.update_last_modified_timestamp(datetime);
+            meta.file_directory.update_last_modified_timestamp(datetime);
         }
-        let offset = index * ENTRY_SIZE;
-        self.io.write(sector_id, offset, &raw_entry).await
+        meta.update_checksum();
+        Ok(())
     }
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
-    pub async fn last_cluster_id(&mut self) -> Result<ClusterID, Error<E>> {
-        if self.last_cluster_id.valid() {
-            return Ok(self.last_cluster_id);
-        }
-        let mut cluster_id = self.sector_ref.cluster_id;
-        if !cluster_id.valid() {
-            return Ok(cluster_id);
-        }
-        let mut sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
-        let mut sector = self.io.read(sector_id).await?;
-        loop {
-            match self.fat_info.next_cluster_id(sector, cluster_id).unwrap() {
-                Entry::BadCluster => return Err(Error::BadCluster(cluster_id)),
-                Entry::Next(id) => cluster_id = id,
-                Entry::Last => break,
-            }
-            let id = self.fat_info.fat_sector_id(cluster_id).unwrap();
-            if id != sector_id {
-                sector_id = id;
-                sector = self.io.read(sector_id).await?;
-            }
-        }
-        self.last_cluster_id = cluster_id;
-        Ok(cluster_id)
-    }
-
     pub async fn allocate(&mut self) -> Result<ClusterID, Error<E>> {
-        let last_cluster_id = self.last_cluster_id().await?;
         let mut context = with_context!(self.context);
-        let cluster_id = context.allocation_bitmap.allocate(last_cluster_id).await?;
-        self.capacity += 1 << self.cluster_size_shift();
+        let cluster_id = context.allocation_bitmap.allocate().await?;
 
         let sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
         let offset = self.fat_info.offset(cluster_id);
         let bytes = u32::to_le_bytes(cluster_id.into());
         self.io.write(sector_id, offset, &bytes).await?;
 
-        let index = self.entry_index + 1;
-        let sector_id = self.meta.id();
-        // TODO: ensure NotFatChain false
-        let offset = index * ENTRY_SIZE + offset_of!(Secondary<StreamExtension>, data_length);
-        let bytes = u64::to_le_bytes(self.capacity);
-        self.io.write(sector_id, offset, &bytes).await?;
-        self.io.flush().await?;
+        let cluster_size = 1 << self.cluster_size_shift();
+        if let Some(meta) = self.meta.as_mut() {
+            let capacity = meta.capacity();
+            if capacity == 0 {
+                meta.stream_extension.first_cluster = u32::from(cluster_id).into();
+            } else {
+                meta.stream_extension.general_secondary_flags.set_fat_chain();
+            }
+            meta.stream_extension.data_length = (capacity + cluster_size).into();
+            meta.update_checksum();
+        }
         Ok(cluster_id)
     }
 
-    pub async fn update_length(&mut self, length: u64) -> Result<(), Error<E>> {
-        self.length = length;
-        let index = self.entry_index + 1;
-        let sector_id = self.meta.id();
-        let offset = index * ENTRY_SIZE
-            + offset_of!(Secondary<StreamExtension>, custom_defined)
-            + offset_of!(StreamExtension, valid_data_length);
-        let bytes = u64::to_le_bytes(self.length);
-        self.io.write(sector_id, offset, &bytes).await?;
-        self.io.flush().await
-    }
-
-    pub async fn close(mut self) -> Result<(), Error<E>> {
-        self.io.flush().await?;
-        let mut context = with_context!(self.context);
-        context.opened_entries.remove(self.id());
-        self.closed = true;
+    pub async fn sync(&mut self) -> Result<(), Error<E>> {
+        if let Some(meta) = self.meta.as_mut() {
+            if meta.dirty {
+                let mut sector_id = meta.sector_ref.id();
+                let bytes: &RawEntry = unsafe { transmute(&meta.file_directory) };
+                self.io.write(sector_id, meta.entry_index * ENTRY_SIZE, &bytes[..]).await?;
+                let mut offset = (meta.entry_index + 1) * ENTRY_SIZE;
+                if offset == 1 << self.sector_size_shift {
+                    offset = 0;
+                    sector_id += 1u32;
+                }
+                let bytes: &RawEntry = unsafe { transmute(&meta.stream_extension) };
+                self.io.write(sector_id, offset, &bytes[..]).await?;
+                self.io.flush().await?;
+            }
+        }
         Ok(())
     }
-}
 
-impl<IO> Drop for ClusterEntry<IO> {
-    fn drop(&mut self) {
-        if self.closed {
-            return;
-        }
-        match () {
-            #[cfg(feature = "async")]
-            () => {
-                panic!("Close must be called explicitly");
-            }
-            #[cfg(not(feature = "async"))]
-            () => {
-                let mut context = self.context.lock().unwrap();
-                context.opened_entries.remove(self.id());
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use memoffset::offset_of;
-
-    use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
-
-    #[test]
-    fn test_valid_data_length_offset() {
-        let offset = offset_of!(Secondary<StreamExtension>, custom_defined)
-            + offset_of!(StreamExtension, valid_data_length);
-        assert_eq!(offset, 8);
+    pub async fn close(&mut self) -> Result<(), Error<E>> {
+        self.sync().await?;
+        let mut context = with_context!(self.context);
+        context.opened_entries.remove(self.id());
+        Ok(())
     }
 }

@@ -10,6 +10,10 @@ impl GeneralSecondaryFlags {
     pub fn not_fat_chain(&self) -> bool {
         (self.0 & 0b10) > 0
     }
+
+    pub fn set_fat_chain(&mut self) {
+        self.0 |= 0b10
+    }
 }
 
 #[derive(Default)]
@@ -39,7 +43,7 @@ pub struct StreamExtension {
     _reserved3: [u8; 4],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 #[repr(C, packed(1))]
 pub(crate) struct Filename {
     pub entry_type: RawEntryType,

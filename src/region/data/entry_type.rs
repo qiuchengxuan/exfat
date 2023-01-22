@@ -1,3 +1,5 @@
+use derive_more::{From, Into};
+
 #[derive(Copy, Clone, PartialEq)]
 pub(crate) enum EntryType {
     AllocationBitmap,
@@ -53,18 +55,13 @@ impl TryFrom<u8> for EntryType {
     }
 }
 
-#[derive(Copy, Clone, Default, Debug)]
+#[derive(Copy, Clone, Default, Debug, From, Into)]
 pub(crate) struct RawEntryType(u8);
 
-impl Into<u8> for RawEntryType {
-    fn into(self) -> u8 {
-        self.0
-    }
-}
-
 impl RawEntryType {
-    pub(crate) fn new(byte: u8) -> Self {
-        Self(byte)
+    pub(crate) fn new(entry_type: EntryType, inuse: bool) -> Self {
+        let raw: u8 = entry_type.into();
+        Self(raw | (inuse as u8) << 7)
     }
 
     pub(crate) fn in_use(&self) -> bool {

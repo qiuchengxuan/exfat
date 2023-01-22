@@ -11,6 +11,12 @@ impl<I: Into<u64>> core::ops::Add<I> for SectorID {
     }
 }
 
+impl<I: Into<u64>> core::ops::AddAssign<I> for SectorID {
+    fn add_assign(&mut self, rhs: I) {
+        self.0 += rhs.into()
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, Display, From, Into, Eq, Ord, PartialOrd, PartialEq)]
 pub struct ClusterID(u32);
 
