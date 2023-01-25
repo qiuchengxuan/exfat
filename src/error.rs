@@ -16,8 +16,10 @@ pub enum Error<E> {
     UpcaseTableMissing,
     UpcaseTableChecksum,
     AllocationBitmapMissing,
+    AlreadyExists,
     NoSuchFileOrDirectory,
     AlreadyOpen,
+    DirectoryNotEmpty,
     InvalidInput(&'static str),
 }
 
@@ -35,8 +37,10 @@ impl<E: Debug> Debug for Error<E> {
             Self::UpcaseTableMissing => write!(f, "Upcase table missing"),
             Self::UpcaseTableChecksum => write!(f, "Upcase table checksum mismatch"),
             Self::AllocationBitmapMissing => write!(f, "Allocation bitmap missing"),
+            Self::AlreadyExists => write!(f, "File or directory already exists"),
             Self::NoSuchFileOrDirectory => write!(f, "No such file or directory"),
             Self::AlreadyOpen => write!(f, "File or directory already open"),
+            Self::DirectoryNotEmpty => write!(f, "Directory not empty"),
             Self::InvalidInput(s) => write!(f, "Invalid input: {}", s),
         }
     }

@@ -95,7 +95,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 file_directory,
                 stream_extension,
                 sector_ref: entryset_sector_ref,
-                entry_index: entryset_index,
+                entry_index: entryset_index as u8,
             };
             if let Some(retval) = h(&entry_set) {
                 return Ok(Some(retval));
@@ -172,16 +172,14 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             io: self.entry.io.clone(),
             context: self.entry.context.clone(),
             fat_info: self.entry.fat_info,
-            meta: Some(Meta::new(entryset)),
+            meta: Meta::new(entryset),
             sector_ref,
             sector_size_shift: self.entry.sector_size_shift,
         };
         trace!("Cluster id {}", cluster_id);
         if file_attributes.directory() > 0 {
-            Ok(FileOrDirectory::Directory(Directory {
-                entry,
-                upcase_table: self.upcase_table.clone(),
-            }))
+            let upcase_table = self.upcase_table.clone();
+            Ok(FileOrDirectory::Directory(Directory { entry, upcase_table }))
         } else {
             Ok(FileOrDirectory::File(File::new(entry, sector_ref)))
         }
@@ -190,24 +188,29 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
     /// Delete a file or directory
     pub async fn delete(&mut self, name: &str) -> Result<(), Error<E>> {
         debug!("Delete file or directory {}", name);
-        let future = self.find(name);
-        let entryset = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
+        let file_or_directory = self.open(name).await?;
+        let meta = match file_or_directory {
+            FileOrDirectory::Directory(mut directory) => {
+                if directory.walk(|_| true).await?.is_some() {
+                    #[cfg(all(feature = "async", not(feature = "std")))]
+                    directory.close().await?;
+                    return Err(Error::DirectoryNotEmpty);
+                }
+                directory.entry.meta.clone()
+            }
+            FileOrDirectory::File(file) => file.entry.meta.clone(),
+        };
 
-        let mut sector_id = entryset.sector_ref.id();
-        let secondary_count = entryset.file_directory.secondary_count as usize;
-        let last_index = entryset.entry_index + secondary_count;
+        let mut sector_id = meta.sector_ref.id();
+        let secondary_count = meta.file_directory.secondary_count as usize;
+        let last_index = meta.entry_index as usize + secondary_count;
         let sector_size = 1 << self.entry.sector_size_shift;
         let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
-            true => self.entry.next(entryset.sector_ref).await?.id(),
+            true => self.entry.next(meta.sector_ref).await?.id(),
             false => sector_id,
         };
 
-        let mut context = with_context!(self.entry.context);
-        if !context.opened_entries.add(entryset.id()) {
-            return Err(Error::AlreadyOpen);
-        }
-
-        let mut offset = entryset.entry_index * ENTRY_SIZE;
+        let mut offset = meta.entry_index as usize * ENTRY_SIZE;
         let io = &mut self.entry.io;
         io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
         offset = (offset + ENTRY_SIZE) % sector_size;
@@ -223,15 +226,14 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             io.write(sector_id, offset, &[EntryType::Filename.into(); 1]).await?;
         }
 
-        let stream_extension = &entryset.stream_extension;
+        let stream_extension = &meta.stream_extension;
         let cluster_id: ClusterID = stream_extension.first_cluster.to_ne().into();
-        let chain = !entryset.stream_extension.general_secondary_flags.not_fat_chain();
+        let chain = !meta.stream_extension.general_secondary_flags.not_fat_chain();
         if cluster_id.valid() {
+            let mut context = with_context!(self.entry.context);
             context.allocation_bitmap.release(cluster_id, chain).await?;
         }
-        io.flush().await?;
-        context.opened_entries.remove(entryset.id());
-        Ok(())
+        io.flush().await
     }
 
     #[cfg(all(feature = "async", not(feature = "std")))]

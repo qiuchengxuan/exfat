@@ -6,7 +6,7 @@ use crate::types::SectorID;
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct EntryID {
     pub sector_id: SectorID,
-    pub index: usize,
+    pub index: u8, // Max sector size / enty size = 4096 / 32 = 128
 }
 
 #[derive(Clone, Default)]
@@ -15,7 +15,7 @@ pub struct EntrySet {
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
     pub(crate) sector_ref: SectorRef,
-    pub(crate) entry_index: usize,
+    pub(crate) entry_index: u8,
 }
 
 impl EntrySet {

@@ -10,7 +10,7 @@ use clap::Parser;
 
 #[derive(Debug, clap::Args)]
 struct List {
-    /// Block device or file that formatted with ExFAT
+    /// Block device or file that formatted with exFAT
     device: String,
     /// Specify path to list, default to root directory
     #[clap(default_value = "/")]
@@ -19,7 +19,7 @@ struct List {
 
 #[derive(Debug, clap::Args)]
 struct Cat {
-    /// Block device or file that formatted with ExFAT
+    /// Block device or file that formatted with exFAT
     device: String,
     /// Specify path to concatenate
     path: String,
@@ -27,7 +27,7 @@ struct Cat {
 
 #[derive(Debug, clap::Args)]
 struct Touch {
-    /// Block device or file that formatted with ExFAT
+    /// Block device or file that formatted with exFAT
     device: String,
     /// Specify path to touch
     path: String,
@@ -35,7 +35,7 @@ struct Touch {
 
 #[derive(Debug, clap::Args)]
 struct Append {
-    /// Block device or file that formatted with ExFAT
+    /// Block device or file that formatted with exFAT
     device: String,
     /// Specify path to touch
     path: String,
@@ -45,7 +45,7 @@ struct Append {
 
 #[derive(Debug, clap::Args)]
 struct Truncate {
-    /// Block device or file that formatted with ExFAT
+    /// Block device or file that formatted with exFAT
     device: String,
     /// Specify path to touch
     path: String,
@@ -55,7 +55,7 @@ struct Truncate {
 
 #[derive(Debug, clap::Args)]
 struct Remove {
-    /// Block device or file that formatted with ExFAT
+    /// Block device or file that formatted with exFAT
     device: String,
     /// Specify path to delete
     path: String,

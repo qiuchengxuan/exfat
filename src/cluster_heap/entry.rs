@@ -60,7 +60,7 @@ pub(crate) struct Meta {
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
     pub sector_ref: SectorRef,
-    pub entry_index: usize, // Within sector
+    pub entry_index: u8, // Within sector
     pub dirty: bool,
 }
 
@@ -118,17 +118,14 @@ pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
     pub context: Arc<Mutex<Context<IO>>>,
     pub fat_info: fat::Info,
-    pub meta: Option<Meta>, // None for root directory
+    pub meta: Meta,
     pub sector_ref: SectorRef,
     pub sector_size_shift: u8,
 }
 
 impl<IO> ClusterEntry<IO> {
     pub(crate) fn id(&self) -> EntryID {
-        match self.meta.as_ref() {
-            Some(meta) => EntryID { sector_id: meta.sector_ref.id(), index: meta.entry_index },
-            None => EntryID { sector_id: self.sector_ref.id(), index: 0 },
-        }
+        EntryID { sector_id: self.meta.sector_ref.id(), index: self.meta.entry_index }
     }
 }
 
@@ -151,8 +148,9 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     }
 
     pub async fn next(&mut self, sector_ref: SectorRef) -> Result<SectorRef, Error<E>> {
-        if let Some(sector_ref) = sector_ref.next() {
-            return Ok(sector_ref);
+        let not_fat_chain = self.meta.stream_extension.general_secondary_flags.not_fat_chain();
+        if !sector_ref.is_last_sector_in_cluster() || not_fat_chain {
+            return Ok(sector_ref.next());
         }
         let cluster_id = sector_ref.cluster_id;
         let sector_id = self.fat_info.fat_sector_id(cluster_id).ok_or(Error::EOF)?;
@@ -164,7 +162,7 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     }
 
     pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
-        let meta = self.meta.as_mut().ok_or(Error::InvalidInput("Not applicable for root dir"))?;
+        let meta = &mut self.meta;
         if option.access {
             meta.file_directory.update_last_accessed_timestamp(datetime);
         }
@@ -178,44 +176,58 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
-    pub async fn allocate(&mut self) -> Result<ClusterID, Error<E>> {
+    pub async fn allocate(&mut self, last: ClusterID) -> Result<ClusterID, Error<E>> {
         let mut context = with_context!(self.context);
+        // XXX: prefer next cluster-id
         let cluster_id = context.allocation_bitmap.allocate().await?;
 
-        let sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
-        let offset = self.fat_info.offset(cluster_id);
-        let bytes = u32::to_le_bytes(cluster_id.into());
-        self.io.write(sector_id, offset, &bytes).await?;
-
         let cluster_size = 1 << self.cluster_size_shift();
-        if let Some(meta) = self.meta.as_mut() {
-            let capacity = meta.capacity();
-            if capacity == 0 {
-                meta.stream_extension.first_cluster = u32::from(cluster_id).into();
-            } else {
+        let meta = &mut self.meta;
+
+        if !last.valid() {
+            meta.stream_extension.first_cluster = u32::from(cluster_id).into();
+        } else if last + 1u32 != cluster_id {
+            if meta.stream_extension.general_secondary_flags.not_fat_chain() {
+                let first_cluster = self.sector_ref.cluster_id;
+                for i in 0..(meta.capacity() / cluster_size - 1) {
+                    let cluster_id = first_cluster + i as u32;
+                    let next = cluster_id + 1u32;
+                    let sector_id = self.fat_info.fat_sector_id(cluster_id).unwrap();
+                    let bytes = u32::to_le_bytes(next.into());
+                    self.io.write(sector_id, self.fat_info.offset(next), &bytes).await?;
+                }
                 meta.stream_extension.general_secondary_flags.set_fat_chain();
             }
-            meta.stream_extension.data_length = (capacity + cluster_size).into();
-            meta.update_checksum();
+            let sector_id = self.fat_info.fat_sector_id(last).unwrap();
+            let bytes = u32::to_le_bytes(cluster_id.into());
+            self.io.write(sector_id, self.fat_info.offset(last), &bytes).await?;
         }
+        meta.stream_extension.data_length = (meta.capacity() + cluster_size).into();
+        meta.update_checksum();
         Ok(cluster_id)
     }
 
     pub async fn sync(&mut self) -> Result<(), Error<E>> {
-        if let Some(meta) = self.meta.as_mut() {
-            if meta.dirty {
-                let mut sector_id = meta.sector_ref.id();
-                let bytes: &RawEntry = unsafe { transmute(&meta.file_directory) };
-                self.io.write(sector_id, meta.entry_index * ENTRY_SIZE, &bytes[..]).await?;
-                let mut offset = (meta.entry_index + 1) * ENTRY_SIZE;
-                if offset == 1 << self.sector_size_shift {
-                    offset = 0;
-                    sector_id += 1u32;
-                }
-                let bytes: &RawEntry = unsafe { transmute(&meta.stream_extension) };
-                self.io.write(sector_id, offset, &bytes[..]).await?;
-                self.io.flush().await?;
+        let meta = &mut self.meta;
+        if !meta.sector_ref.cluster_id.valid() {
+            // Probably root directory
+            return Ok(());
+        }
+        if meta.dirty {
+            trace!("Flush metadata since dirty");
+            let mut sector_id = meta.sector_ref.id();
+            let bytes: &RawEntry = unsafe { transmute(&meta.file_directory) };
+            let offset = meta.entry_index as usize * ENTRY_SIZE;
+            self.io.write(sector_id, offset, &bytes[..]).await?;
+            let mut offset = (meta.entry_index as usize + 1) * ENTRY_SIZE;
+            if offset == 1 << self.sector_size_shift {
+                offset = 0;
+                sector_id += 1u32;
             }
+            let bytes: &RawEntry = unsafe { transmute(&meta.stream_extension) };
+            self.io.write(sector_id, offset, &bytes[..]).await?;
+            self.io.flush().await?;
+            meta.dirty = false;
         }
         Ok(())
     }

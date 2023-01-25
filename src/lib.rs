@@ -1,8 +1,37 @@
 //! # embedded-exfat
 //!
-//! > An ExFAT Library in rust mainly focusing on `no_std` embedded system with async support
+//! > An exFAT Library in rust mainly focusing on `no_std` embedded system with async support
 //!
-//! `alloc` is mandatory for this crate, although memory allocation is minimized, 256B for Allocation bitmap and 12B for each file or directory, including root directory.
+//! `alloc` is mandatory for this crate, although memory allocation is minimized, 256B for upcase table and 12~16B for each file or directory, including root directory.
+//!
+//! ## Using this crate
+//!
+//! ```rust
+//! use exfat::error::Error;
+//! use exfat::io::std::FileIO;
+//! use exfat::ExFAT;
+//! use exfat::FileOrDirectory;
+//!
+//! let io = FileIO::open(device).map_err(|e| Error::IO(e)).unwrap();
+//! let mut exfat = ExFAT::new(io).unwrap();
+//! exfat.validate_checksum().unwrap();
+//! let mut root = exfat.root_directory().unwrap();
+//! root.validate_upcase_table_checksum().unwrap();
+//! let mut file = match root.open().unwrap().open("test.txt").unwrap() {
+//!     FileOrDirectory::File(f) => f,
+//!     FileOrDirectory::Directory(_) => panic!("Not a file"),
+//! };
+//! let mut stdout = io::stdout();
+//! let mut buf = [0u8; 512];
+//! loop {
+//!     let size = file.read(&mut buf).unwrap();
+//!     stdout.write_all(&buf[..size]).unwrap();
+//!     if size < buf.len() {
+//!         break;
+//!     }
+//! }
+//! ```
+
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 extern crate alloc;
@@ -63,7 +92,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
             heap_offset: boot_sector.cluster_heap_offset.to_ne(),
             sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
             cluster_id: boot_sector.first_cluster_of_root_directory.to_ne().into(),
-            offset: 0,
+            sector_index: 0,
         };
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let fat_info = fat::Info::new(sector_size_shift, fat_offset, fat_length);

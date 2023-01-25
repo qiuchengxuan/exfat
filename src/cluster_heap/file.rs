@@ -22,7 +22,7 @@ pub struct File<E: Debug, IO: crate::io::IO<Error = E>> {
 
 impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     pub(crate) fn new(entry: ClusterEntry<IO>, sector_ref: SectorRef) -> Self {
-        let size = entry.meta.as_ref().map(|meta| meta.length()).unwrap_or_default();
+        let size = entry.meta.length();
         Self { entry, sector_ref, size, cursor: 0, dirty: false }
     }
 }
@@ -86,10 +86,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     /// all bytes will be successfully written,
     /// Otherwise a sector size will be written.
     ///
-    /// Write operation will not change file metadata immediately until
+    /// Write operation will not apply file metadata change immediately until
     /// flush or sync_all called.
-    ///
-    /// Write operation will not change file modify timestamp
     pub async fn write(&mut self, bytes: &[u8]) -> Result<usize, Error<E>> {
         if bytes.len() == 0 {
             return Ok(0);
@@ -97,7 +95,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         self.dirty = true;
         let sector_size = 1 << self.entry.sector_size_shift;
         let offset = self.cursor as usize % sector_size;
-        let capacity = self.entry.meta.as_ref().unwrap().capacity();
+        let capacity = self.entry.meta.capacity();
         let sector_remain = if capacity > 0 { sector_size - offset } else { 0 };
         if sector_remain > 0 {
             let length = core::cmp::min(bytes.len(), sector_remain);
@@ -111,7 +109,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         if self.cursor < capacity {
             self.sector_ref = self.entry.next(self.sector_ref).await?;
         } else {
-            let cluster_id = self.entry.allocate().await?;
+            let cluster_id = self.entry.allocate(self.sector_ref.cluster_id).await?;
             self.sector_ref = self.sector_ref.new(cluster_id, 0);
         }
         let sector_id = self.sector_ref.id();
@@ -189,7 +187,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
             self.cursor = size;
             self.seek(SeekFrom::Start(size)).await?;
         }
-        self.entry.meta.as_mut().unwrap().set_length(size);
+        self.entry.meta.set_length(size);
         self.size = size;
         Ok(())
     }
@@ -203,7 +201,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
 }
 
 #[cfg(any(not(feature = "async"), feature = "std"))]
-impl<E: core::fmt::Debug, IO: crate::io::IO<Error = E>> Drop for File<E, IO> {
+impl<E: Debug, IO: crate::io::IO<Error = E>> Drop for File<E, IO> {
     fn drop(&mut self) {
         match () {
             #[cfg(all(feature = "async", not(feature = "std")))]

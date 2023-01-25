@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use super::clusters::SectorRef;
 use super::directory::Directory;
+use super::entry::Meta;
 use super::{
     allocation_bitmap::AllocationBitmap,
     context::{Context, OpenedEntries},
@@ -78,7 +79,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
                 io,
                 context,
                 fat_info,
-                meta: None,
+                meta: Meta::new(Default::default()),
                 sector_ref,
                 sector_size_shift,
             },
@@ -117,15 +118,13 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
     }
 
     pub async fn open(&mut self) -> Result<Directory<E, IO>, Error<E>> {
-        let entry = &mut self.directory.entry;
-        let mut context = with_context!(entry.context);
+        let entry = self.directory.entry.clone();
+        let mut context = with_context!(self.directory.entry.context);
         if !context.opened_entries.add(entry.id()) {
             return Err(Error::AlreadyOpen);
         }
-        Ok(Directory { entry: entry.clone(), upcase_table: self.directory.upcase_table.clone() })
+        Ok(Directory { entry, upcase_table: self.directory.upcase_table.clone() })
     }
-
-    pub fn close(self) {}
 }
 
 unsafe impl<E: Debug, IO: Send + crate::io::IO<Error = E>> Send for RootDirectory<E, IO> {}
