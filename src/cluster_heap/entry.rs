@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 use core::mem::transmute;
 
-use super::clusters::SectorRef;
 use super::context::Context;
 use super::entryset::{EntryID, EntrySet};
-use crate::error::Error;
+use crate::error::{DataError, Error, OperationError};
 use crate::fat;
+use crate::fs::{self, SectorRef};
 use crate::io::IOWrapper;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
@@ -118,14 +118,14 @@ pub(crate) struct ClusterEntry<IO> {
     pub io: IOWrapper<IO>,
     pub context: Arc<Mutex<Context<IO>>>,
     pub fat_info: fat::Info,
+    pub fs_info: fs::Info,
     pub meta: Meta,
     pub sector_ref: SectorRef,
-    pub sector_size_shift: u8,
 }
 
 impl<IO> ClusterEntry<IO> {
     pub(crate) fn id(&self) -> EntryID {
-        EntryID { sector_id: self.meta.sector_ref.id(), index: self.meta.entry_index }
+        EntryID { sector_id: self.meta.sector_ref.id(&self.fs_info), index: self.meta.entry_index }
     }
 }
 
@@ -143,21 +143,27 @@ impl Default for TouchOption {
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
-    pub fn cluster_size_shift(&self) -> u8 {
-        self.sector_size_shift + self.sector_ref.sectors_per_cluster_shift
-    }
-
     pub async fn next(&mut self, sector_ref: SectorRef) -> Result<SectorRef, Error<E>> {
-        let not_fat_chain = self.meta.stream_extension.general_secondary_flags.not_fat_chain();
-        if !sector_ref.is_last_sector_in_cluster() || not_fat_chain {
-            return Ok(sector_ref.next());
+        let fat_chain = self.meta.stream_extension.general_secondary_flags.fat_chain();
+        if sector_ref.sector_index != self.fs_info.sectors_per_cluster() {
+            return Ok(sector_ref.next(self.fs_info.sectors_per_cluster_shift));
+        }
+        if !fat_chain {
+            let num_clusters = (self.meta.length() / self.fs_info.cluster_size() as u64) as u32;
+            let max_cluster_id = self.sector_ref.cluster_id + num_clusters;
+            if sector_ref.cluster_id + 1u32 >= max_cluster_id {
+                return Err(OperationError::EOF.into());
+            }
+            return Ok(sector_ref.next(self.fs_info.sectors_per_cluster_shift));
         }
         let cluster_id = sector_ref.cluster_id;
-        let sector_id = self.fat_info.fat_sector_id(cluster_id).ok_or(Error::EOF)?;
+        let option = self.fat_info.fat_sector_id(cluster_id);
+        let sector_id = option.ok_or(Error::Data(DataError::FATChain))?;
         let sector = self.io.read(sector_id).await?;
         match self.fat_info.next_cluster_id(sector, sector_ref.cluster_id) {
-            Ok(Entry::Next(cluster_id)) => Ok(sector_ref.new(cluster_id, 0)),
-            _ => Err(Error::EOF),
+            Ok(Entry::Next(cluster_id)) => Ok(SectorRef::new(cluster_id, 0)),
+            Ok(Entry::Last) => Err(OperationError::EOF.into()),
+            _ => Err(DataError::FATChain.into()),
         }
     }
 
@@ -177,17 +183,21 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     pub async fn allocate(&mut self, last: ClusterID) -> Result<ClusterID, Error<E>> {
+        if !self.meta.stream_extension.general_secondary_flags.allocation_possible() {
+            return Err(OperationError::AllocationNotPossible.into());
+        }
         let mut context = with_context!(self.context);
         // XXX: prefer next cluster-id
         let cluster_id = context.allocation_bitmap.allocate().await?;
 
-        let cluster_size = 1 << self.cluster_size_shift();
+        let cluster_size = self.fs_info.cluster_size() as u64;
         let meta = &mut self.meta;
 
+        let fat_chain = !meta.stream_extension.general_secondary_flags.fat_chain();
         if !last.valid() {
             meta.stream_extension.first_cluster = u32::from(cluster_id).into();
-        } else if last + 1u32 != cluster_id {
-            if meta.stream_extension.general_secondary_flags.not_fat_chain() {
+        } else if last + 1u32 != cluster_id || fat_chain {
+            if !fat_chain {
                 let first_cluster = self.sector_ref.cluster_id;
                 for i in 0..(meta.capacity() / cluster_size - 1) {
                     let cluster_id = first_cluster + i as u32;
@@ -215,12 +225,12 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         }
         if meta.dirty {
             trace!("Flush metadata since dirty");
-            let mut sector_id = meta.sector_ref.id();
+            let mut sector_id = meta.sector_ref.id(&self.fs_info);
             let bytes: &RawEntry = unsafe { transmute(&meta.file_directory) };
             let offset = meta.entry_index as usize * ENTRY_SIZE;
             self.io.write(sector_id, offset, &bytes[..]).await?;
             let mut offset = (meta.entry_index as usize + 1) * ENTRY_SIZE;
-            if offset == 1 << self.sector_size_shift {
+            if offset == self.fs_info.sector_size() as usize {
                 offset = 0;
                 sector_id += 1u32;
             }

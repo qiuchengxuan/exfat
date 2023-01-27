@@ -109,7 +109,7 @@ fn main() {
         Action::Remove(args) => remove::remove(&args.device, &args.path),
     };
     if let Some(error) = result.err() {
-        eprintln!("{}", error);
+        eprintln!("{:?}", error);
         std::process::exit(1);
     }
 }

@@ -7,6 +7,7 @@
 //! ## Using this crate
 //!
 //! ```rust
+//! use std::io::Write;
 //! use exfat::error::Error;
 //! use exfat::io::std::FileIO;
 //! use exfat::ExFAT;
@@ -21,7 +22,7 @@
 //!     FileOrDirectory::File(f) => f,
 //!     FileOrDirectory::Directory(_) => panic!("Not a file"),
 //! };
-//! let mut stdout = io::stdout();
+//! let mut stdout = std::io::stdout();
 //! let mut buf = [0u8; 512];
 //! loop {
 //!     let size = file.read(&mut buf).unwrap();
@@ -46,6 +47,7 @@ mod cluster_heap;
 mod endian;
 pub mod error;
 mod fat;
+pub(crate) mod fs;
 pub mod io;
 mod region;
 pub(crate) mod sync;
@@ -57,18 +59,18 @@ use core::mem;
 
 use memoffset::offset_of;
 
-use cluster_heap::clusters::SectorRef;
 pub use cluster_heap::directory::{Directory, FileOrDirectory};
 use cluster_heap::root::RootDirectory as RootDir;
-use error::Error;
+use error::{DataError, Error, ImplementationError};
+use fs::SectorRef;
 use io::IOWrapper;
 
 pub struct ExFAT<IO> {
     io: IOWrapper<IO>,
     serial_number: u32,
-    sector_size_shift: u8,
     fat_info: fat::Info,
-    sector_ref: SectorRef,
+    fs_info: fs::Info,
+    sector_ref: fs::SectorRef,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
@@ -77,10 +79,10 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         let blocks = io.read(0.into()).await.map_err(|e| Error::IO(e))?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         if !boot_sector.is_exfat() {
-            return Err(Error::NotExFAT);
+            return Err(DataError::NotExFAT.into());
         }
         if boot_sector.number_of_fats > 1 {
-            return Err(Error::TexFATNotSupported);
+            return Err(ImplementationError::TexFATNotSupported.into());
         }
         let sector_size = boot_sector.bytes_per_sector() as usize;
         let fat_offset = boot_sector.fat_offset.to_ne();
@@ -88,18 +90,19 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         trace!("FAT offset {} length {}", fat_offset, fat_length);
 
         io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
-        let sector_ref = SectorRef {
-            heap_offset: boot_sector.cluster_heap_offset.to_ne(),
-            sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
-            cluster_id: boot_sector.first_cluster_of_root_directory.to_ne().into(),
-            sector_index: 0,
-        };
+        let cluster_id = boot_sector.first_cluster_of_root_directory.to_ne();
+        let sector_ref = SectorRef::new(cluster_id.into(), 0);
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let fat_info = fat::Info::new(sector_size_shift, fat_offset, fat_length);
+        let fs_info = fs::Info {
+            heap_offset: boot_sector.cluster_heap_offset.to_ne(),
+            sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
+            sector_size_shift,
+        };
         Ok(Self {
             io: IOWrapper::new(io),
             serial_number: boot_sector.volumn_serial_number.to_ne(),
-            sector_size_shift,
+            fs_info,
             fat_info,
             sector_ref,
         })
@@ -139,7 +142,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         let sector = self.io.read(11.into()).await?;
         let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[0]) };
         if u32::from_le(array[0]) != checksum.sum() {
-            return Err(Error::Checksum);
+            return Err(DataError::BootChecksum.into());
         }
         Ok(())
     }
@@ -150,7 +153,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
 
     pub async fn root_directory(&mut self) -> Result<RootDir<E, IO>, Error<E>> {
         let io = self.io.clone();
-        RootDir::new(io, self.fat_info, self.sector_ref, self.sector_size_shift).await
+        RootDir::new(io, self.fat_info, self.fs_info, self.sector_ref).await
     }
 }
 

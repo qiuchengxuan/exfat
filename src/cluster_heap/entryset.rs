@@ -1,4 +1,4 @@
-use super::clusters::SectorRef;
+use crate::fs::{self, SectorRef};
 use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 use crate::types::SectorID;
@@ -19,8 +19,8 @@ pub struct EntrySet {
 }
 
 impl EntrySet {
-    pub(crate) fn id(&self) -> EntryID {
-        EntryID { sector_id: self.sector_ref.id(), index: self.entry_index }
+    pub(crate) fn id(&self, fs_info: &fs::Info) -> EntryID {
+        EntryID { sector_id: self.sector_ref.id(fs_info), index: self.entry_index }
     }
 
     pub fn in_use(&self) -> bool {

@@ -1,53 +1,73 @@
-use core::fmt::{Debug, Display, Formatter, Result};
+use core::fmt::{Debug, Formatter, Result};
 
-use crate::types::ClusterID;
-
-pub enum Error<E> {
-    Generic(&'static str),
-    IO(E),
+#[derive(Debug)]
+pub enum DataError {
     NotExFAT,
-    Checksum,
-    EOF,
-    NoSpace,
-    BadCluster(ClusterID),
-    // FAT
-    TexFATNotSupported,
-    // FileDirectory
+    BootChecksum,
+    AllocationBitmapMissing,
     UpcaseTableMissing,
     UpcaseTableChecksum,
-    AllocationBitmapMissing,
-    AlreadyExists,
-    NoSuchFileOrDirectory,
+    FATChain,
+    Metadata,
+}
+
+#[derive(Debug)]
+pub enum ImplementationError {
+    TexFATNotSupported,
+    CreateDirectoryNotSupported,
+}
+
+#[derive(Debug)]
+pub enum InputError {
+    NameTooLong,
+    SeekPosition,
+    Size,
+}
+
+#[derive(Debug)]
+pub enum OperationError {
     AlreadyOpen,
+    NotFound,
+    NotFile,
+    NotDirectory,
+    AlreadyExists,
     DirectoryNotEmpty,
-    InvalidInput(&'static str),
+    EOF,
+    ClusterAllocation,
+    AllocationNotPossible,
+}
+
+pub enum Error<E> {
+    IO(E),
+    Data(DataError),
+    Implementation(ImplementationError),
+    Input(InputError),
+    Operation(OperationError),
 }
 
 impl<E: Debug> Debug for Error<E> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            Self::Generic(s) => write!(f, "Generic error({})", s),
             Self::IO(e) => write!(f, "IO({:?})", e),
-            Self::NotExFAT => write!(f, "Not ExFAT filesystem"),
-            Self::TexFATNotSupported => write!(f, "TexFAT not supported"),
-            Self::Checksum => write!(f, "Checksum mismatch"),
-            Self::EOF => write!(f, "End of file"),
-            Self::NoSpace => write!(f, "Insufficent space"),
-            Self::BadCluster(id) => write!(f, "Bad cluster({:#X})", u32::from(*id)),
-            Self::UpcaseTableMissing => write!(f, "Upcase table missing"),
-            Self::UpcaseTableChecksum => write!(f, "Upcase table checksum mismatch"),
-            Self::AllocationBitmapMissing => write!(f, "Allocation bitmap missing"),
-            Self::AlreadyExists => write!(f, "File or directory already exists"),
-            Self::NoSuchFileOrDirectory => write!(f, "No such file or directory"),
-            Self::AlreadyOpen => write!(f, "File or directory already open"),
-            Self::DirectoryNotEmpty => write!(f, "Directory not empty"),
-            Self::InvalidInput(s) => write!(f, "Invalid input: {}", s),
+            Self::Data(e) => write!(f, "{:?}", e),
+            Self::Implementation(e) => write!(f, "{:?}", e),
+            Self::Input(e) => write!(f, "{:?}", e),
+            Self::Operation(e) => write!(f, "{:?}", e),
         }
     }
 }
 
-impl<E: Debug> Display for Error<E> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{:?}", self)
-    }
+macro_rules! from_error {
+    ($type:ty, $variant:ident) => {
+        impl<E> From<$type> for Error<E> {
+            fn from(e: $type) -> Self {
+                Self::$variant(e)
+            }
+        }
+    };
 }
+
+from_error!(DataError, Data);
+from_error!(ImplementationError, Implementation);
+from_error!(InputError, Input);
+from_error!(OperationError, Operation);

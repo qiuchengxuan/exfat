@@ -7,7 +7,8 @@ use super::entry::{name_hash, with_context};
 use super::entry::{ClusterEntry, Meta, TouchOption};
 use super::entryset::EntrySet;
 use super::file::File;
-use crate::error::Error;
+use crate::error::{DataError, Error, OperationError};
+use crate::fs::SectorRef;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
@@ -32,10 +33,11 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         F: Fn(&FileDirectory, &Secondary<StreamExtension>) -> bool,
         H: FnMut(&EntrySet) -> Option<R>,
     {
-        let sector_size = 1 << self.entry.sector_size_shift;
+        let fs_info = self.entry.fs_info;
+        let sector_size = fs_info.sector_size() as usize;
         let mut sector_ref = self.entry.sector_ref;
         let mut index = 0;
-        let sector = self.entry.io.read(sector_ref.id()).await?;
+        let sector = self.entry.io.read(sector_ref.id(&fs_info)).await?;
         let mut entries: &[[RawEntry; 16]] = unsafe { mem::transmute(sector) };
         let mut file_directory: FileDirectory;
         let mut stream_extension: Secondary<StreamExtension>;
@@ -53,7 +55,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 }
                 Err(t) => {
                     warn!("Unexpected entry type {}", t);
-                    return Err(Error::Generic("Unexpected entry type"));
+                    return Err(DataError::Metadata.into());
                 }
             };
             file_directory = unsafe { mem::transmute(*entry) };
@@ -64,7 +66,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             if (index * ENTRY_SIZE) >= sector_size {
                 index -= sector_size / ENTRY_SIZE;
                 sector_ref = self.entry.next(sector_ref).await?;
-                let sector = self.entry.io.read(sector_ref.id()).await?;
+                let sector = self.entry.io.read(sector_ref.id(&fs_info)).await?;
                 entries = unsafe { mem::transmute(sector) }
             }
             let entry = &entries[index / 16][index % 16];
@@ -80,7 +82,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 if (index * ENTRY_SIZE) >= sector_size {
                     index -= sector_size / ENTRY_SIZE;
                     sector_ref = self.entry.next(sector_ref).await?;
-                    let sector = self.entry.io.read(sector_ref.id()).await?;
+                    let sector = self.entry.io.read(sector_ref.id(&fs_info)).await?;
                     entries = unsafe { mem::transmute(sector) }
                 }
                 let entry: &Filename = unsafe { mem::transmute(&entries[index / 16][index % 16]) };
@@ -158,25 +160,25 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
 
     /// Open a file or directory
     pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<E, IO>, Error<E>> {
-        debug!("Open file {}", name);
+        debug!("Open with name {}", name);
         let future = self.find(name);
-        let entryset = future.await?.ok_or(Error::NoSuchFileOrDirectory)?;
+        let entryset = future.await?.ok_or(Error::Operation(OperationError::NotFound))?;
         let mut context = with_context!(self.entry.context);
-        if !context.opened_entries.add(entryset.id()) {
-            return Err(Error::AlreadyOpen);
+        if !context.opened_entries.add(entryset.id(&self.entry.fs_info)) {
+            return Err(OperationError::AlreadyOpen.into());
         }
         let cluster_id = entryset.stream_extension.first_cluster.to_ne();
         let file_attributes = entryset.file_directory.file_attributes();
-        let sector_ref = self.entry.sector_ref.new(cluster_id.into(), 0);
+        let sector_ref = SectorRef::new(cluster_id.into(), 0);
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
             context: self.entry.context.clone(),
-            fat_info: self.entry.fat_info,
             meta: Meta::new(entryset),
             sector_ref,
-            sector_size_shift: self.entry.sector_size_shift,
+            ..self.entry
         };
-        trace!("Cluster id {}", cluster_id);
+        let (length, capacity) = (entry.meta.length(), entry.meta.capacity());
+        trace!("Cluster id {} length {} capacity {}", cluster_id, length, capacity);
         if file_attributes.directory() > 0 {
             let upcase_table = self.upcase_table.clone();
             Ok(FileOrDirectory::Directory(Directory { entry, upcase_table }))
@@ -194,19 +196,20 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 if directory.walk(|_| true).await?.is_some() {
                     #[cfg(all(feature = "async", not(feature = "std")))]
                     directory.close().await?;
-                    return Err(Error::DirectoryNotEmpty);
+                    return Err(OperationError::DirectoryNotEmpty.into());
                 }
                 directory.entry.meta.clone()
             }
             FileOrDirectory::File(file) => file.entry.meta.clone(),
         };
 
-        let mut sector_id = meta.sector_ref.id();
+        let fs_info = self.entry.fs_info;
+        let mut sector_id = meta.sector_ref.id(&fs_info);
         let secondary_count = meta.file_directory.secondary_count as usize;
         let last_index = meta.entry_index as usize + secondary_count;
-        let sector_size = 1 << self.entry.sector_size_shift;
+        let sector_size = fs_info.sector_size() as usize;
         let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
-            true => self.entry.next(meta.sector_ref).await?.id(),
+            true => self.entry.next(meta.sector_ref).await?.id(&fs_info),
             false => sector_id,
         };
 
@@ -228,10 +231,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
 
         let stream_extension = &meta.stream_extension;
         let cluster_id: ClusterID = stream_extension.first_cluster.to_ne().into();
-        let chain = !meta.stream_extension.general_secondary_flags.not_fat_chain();
+        let fat_chain = meta.stream_extension.general_secondary_flags.fat_chain();
         if cluster_id.valid() {
             let mut context = with_context!(self.entry.context);
-            context.allocation_bitmap.release(cluster_id, chain).await?;
+            context.allocation_bitmap.release(cluster_id, fat_chain).await?;
         }
         io.flush().await
     }

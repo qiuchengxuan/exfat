@@ -2,13 +2,12 @@ use core::mem::{size_of, transmute};
 
 use memoffset::offset_of;
 
-use super::clusters::SectorRef;
-use crate::error::Error;
+use crate::error::{DataError, Error, OperationError};
 use crate::fat;
 use crate::io::IOWrapper;
 use crate::region::boot::BootSector;
 use crate::region::fat::Entry;
-use crate::types::ClusterID;
+use crate::types::{ClusterID, SectorID};
 
 const ARRAY_SIZE: usize = 512 / size_of::<usize>();
 
@@ -36,7 +35,7 @@ fn bit_offset(bit: u8) -> u8 {
 #[derive(Clone)]
 pub struct DumbAllocator<IO> {
     io: IOWrapper<IO>,
-    base: SectorRef,
+    base: SectorID,
     fat_info: fat::Info,
     maybe_available_offset: u32,
     length: u32,
@@ -49,11 +48,11 @@ pub struct DumbAllocator<IO> {
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     async fn init(&mut self) -> Result<(), Error<E>> {
-        let mut sector_id = self.base.id();
+        let mut sector_id = self.base;
         let sector = self.io.read(sector_id).await?;
         if sector[0][0] & 0x3 != 0x3 {
             let byte = sector[0][0] | 0x3;
-            self.io.write(self.base.id(), 0, &[byte; 1]).await?;
+            self.io.write(self.base, 0, &[byte; 1]).await?;
         }
         let mut sector = self.io.read(sector_id).await?;
         let mut array: &[[usize; ARRAY_SIZE]] = unsafe { transmute(sector) };
@@ -75,7 +74,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
 
     pub(crate) async fn new(
         mut io: IOWrapper<IO>,
-        base: SectorRef,
+        base: SectorID,
         fat_info: fat::Info,
         length: u32,
     ) -> Result<Self, Error<E>> {
@@ -98,7 +97,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
 
     async fn next_available(&mut self) -> Result<(u32, u8), Error<E>> {
         let sector_size = 1 << self.sector_size_shift;
-        let mut sector_id = self.base.id() + self.maybe_available_offset / sector_size;
+        let mut sector_id = self.base + self.maybe_available_offset / sector_size;
         let mut sector = self.io.read(sector_id).await?;
         for i in self.maybe_available_offset..self.length {
             if i != self.maybe_available_offset && i % sector_size == 0 {
@@ -111,7 +110,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
                 return Ok((i, bits));
             }
         }
-        Err(Error::NoSpace)
+        Err(OperationError::ClusterAllocation.into())
     }
 
     async fn ensure_percent_inuse(&mut self) -> Result<(), Error<E>> {
@@ -127,12 +126,12 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
 
     pub async fn allocate(&mut self) -> Result<ClusterID, Error<E>> {
         if self.num_available_clusters == 0 {
-            return Err(Error::NoSpace);
+            return Err(OperationError::ClusterAllocation.into());
         }
         let (byte_offset, mut bits) = self.next_available().await?;
         let bit_offset = bit_offset(first_zero_bit(bits)) as u32;
         let sector_size = 1 << self.sector_size_shift;
-        let sector_id = (self.base + (byte_offset / sector_size) as u32).id();
+        let sector_id = self.base + byte_offset / sector_size;
         let offset = byte_offset % sector_size;
         bits |= 1 << bit_offset;
         self.io.write(sector_id, offset as usize, &[bits; 1]).await?;
@@ -150,11 +149,11 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let byte_offset = index / 8;
         if byte_offset >= self.length {
             warn!("Cluster ID {} out of range", cluster_id);
-            return Err(Error::Generic("Cluster id out of range"));
+            return Err(DataError::FATChain.into());
         }
         let sector_size = 1 << self.sector_size_shift;
         let sector_offset = byte_offset / sector_size;
-        let sector_id = (self.base + sector_offset).id();
+        let sector_id = self.base + sector_offset;
         let sector = self.io.read(sector_id).await?;
         let offset = (byte_offset % sector_size) as usize;
         let bit_offset = index % 8;
@@ -186,7 +185,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
                 Ok(entry) => entry,
                 Err(value) => {
                     warn!("Invalid next entry {:X} for cluster id {}", value, cluster_id);
-                    return Err(Error::Generic("Not a valid entry"));
+                    return Err(DataError::FATChain.into());
                 }
             };
             match entry {

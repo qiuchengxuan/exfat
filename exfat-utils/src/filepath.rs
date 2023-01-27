@@ -1,6 +1,6 @@
 use std::io;
 
-use exfat::error::Error;
+use exfat::error::{Error, OperationError};
 use exfat::Directory;
 use exfat::FileOrDirectory;
 
@@ -19,7 +19,7 @@ where
         for name in parent.split('/') {
             dir = match dir.open(name)? {
                 FileOrDirectory::Directory(dir) => dir,
-                FileOrDirectory::File(_) => return Err(Error::NoSuchFileOrDirectory),
+                FileOrDirectory::File(_) => return Err(OperationError::NotFound.into()),
             }
         }
     }

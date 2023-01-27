@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io;
 use std::io::Read;
 
-use exfat::error::Error;
+use exfat::error::{Error, OperationError};
 use exfat::io::std::FileIO;
 use exfat::ExFAT;
 use exfat::FileOrDirectory;
@@ -22,7 +22,7 @@ pub fn append(device: &str, path: &str, file: &str) -> Result<(), Error<io::Erro
     root.validate_upcase_table_checksum()?;
     let mut file = match open(root.open()?, &path)? {
         FileOrDirectory::File(f) => f,
-        FileOrDirectory::Directory(_) => return Err(Error::InvalidInput("Not a file")),
+        FileOrDirectory::Directory(_) => return Err(OperationError::NotFile.into()),
     };
     file.write_all(&buffer)?;
     Ok(())

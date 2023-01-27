@@ -1,6 +1,6 @@
 use std::io;
 
-use exfat::error::Error;
+use exfat::error::{Error, OperationError};
 use exfat::io::std::FileIO;
 use exfat::ExFAT;
 use exfat::FileOrDirectory;
@@ -15,7 +15,7 @@ pub fn truncate(device: &str, path: &str, size: u64) -> Result<(), Error<io::Err
     root.validate_upcase_table_checksum()?;
     let mut file = match open(root.open()?, &path)? {
         FileOrDirectory::File(f) => f,
-        FileOrDirectory::Directory(_) => return Err(Error::InvalidInput("Not a file")),
+        FileOrDirectory::Directory(_) => return Err(OperationError::NotFile.into()),
     };
     file.truncate(size)
 }

@@ -7,12 +7,16 @@ use crate::endian::Little as LE;
 pub struct GeneralSecondaryFlags(u8);
 
 impl GeneralSecondaryFlags {
-    pub fn not_fat_chain(&self) -> bool {
-        (self.0 & 0b10) > 0
+    pub fn fat_chain(&self) -> bool {
+        (self.0 & 0b10) == 0
     }
 
     pub fn set_fat_chain(&mut self) {
         self.0 |= 0b10
+    }
+
+    pub fn allocation_possible(&self) -> bool {
+        self.0 & 1 > 0
     }
 }
 

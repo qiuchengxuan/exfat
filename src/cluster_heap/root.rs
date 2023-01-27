@@ -5,7 +5,6 @@ use alloc::rc::Rc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::clusters::SectorRef;
 use super::directory::Directory;
 use super::entry::Meta;
 use super::{
@@ -14,8 +13,9 @@ use super::{
     entry::{with_context, ClusterEntry},
 };
 use crate::endian::Little as LE;
-use crate::error::Error;
+use crate::error::{DataError, Error, OperationError};
 use crate::fat;
+use crate::fs::{self, SectorRef};
 use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
@@ -33,13 +33,13 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
     pub(crate) async fn new(
         mut io: IOWrapper<IO>,
         fat_info: fat::Info,
+        fs_info: fs::Info,
         sector_ref: SectorRef,
-        sector_size_shift: u8,
     ) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<11>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
-        let sector = io.read(sector_ref.id()).await?;
+        let sector = io.read(sector_ref.id(&fs_info)).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
             match RawEntryType::from(entry[0]).entry_type() {
@@ -58,13 +58,16 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
                 _ => break,
             };
         }
-        let upcase_table = upcase_table.ok_or(Error::UpcaseTableMissing)?;
+
+        let upcase_table = upcase_table.ok_or(Error::Data(DataError::UpcaseTableMissing))?;
         let context = {
-            let region = allocation_bitmap.ok_or(Error::AllocationBitmapMissing)?;
-            let first = sector_ref.new(region.first_cluster.to_ne().into(), 0);
+            let region =
+                allocation_bitmap.ok_or(Error::Data(DataError::AllocationBitmapMissing))?;
+            let first_cluster = region.first_cluster.to_ne();
+            let base = first_cluster as u64 * fs_info.sector_size() as u64;
             let length = region.data_length.to_ne() as u32;
-            trace!("Allocation bitmap found at cluster {} length {}", first.cluster_id, length);
-            let bitmap = AllocationBitmap::new(io.clone(), first, fat_info, length).await?;
+            trace!("Allocation bitmap found at cluster {} length {}", first_cluster, length);
+            let bitmap = AllocationBitmap::new(io.clone(), base.into(), fat_info, length).await?;
             Arc::new(Mutex::new(Context {
                 allocation_bitmap: bitmap,
                 opened_entries: OpenedEntries { entries: Vec::with_capacity(4) },
@@ -72,17 +75,12 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         };
         let cluster_id = upcase_table.first_cluster.to_ne();
         trace!("Upcase table found at cluster id {}", cluster_id);
-        let sector = io.read(sector_ref.new(cluster_id.into(), 0).id()).await?;
+        let sector = io.read(SectorRef::new(cluster_id.into(), 0).id(&fs_info)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
+        let mut meta = Meta::new(Default::default());
+        meta.stream_extension.general_secondary_flags.set_fat_chain();
         let directory = Directory {
-            entry: ClusterEntry {
-                io,
-                context,
-                fat_info,
-                meta: Meta::new(Default::default()),
-                sector_ref,
-                sector_size_shift,
-            },
+            entry: ClusterEntry { io, context, fat_info, fs_info, meta, sector_ref },
             upcase_table: Rc::new((*array).into()),
         };
         Ok(Self { directory, upcase_table, volumn_label })
@@ -91,10 +89,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
-        let sector_ref = &self.directory.entry.sector_ref;
-        let first_sector = sector_ref.new(first_cluster.into(), 0).id();
+        let fs_info = &self.directory.entry.fs_info;
+        let first_sector = SectorRef::new(first_cluster.into(), 0).id(&fs_info);
         let data_length = self.upcase_table.data_length.to_ne();
-        let sector_size = 1 << self.directory.entry.sector_size_shift;
+        let sector_size = fs_info.sector_size();
         let num_sectors = data_length / sector_size as u64;
         let io = &mut self.directory.entry.io;
         for i in 0..num_sectors {
@@ -108,7 +106,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
             checksum.write(&crate::io::flatten(sector)[..remain]);
         }
         if checksum.sum() != self.upcase_table.table_checksum.to_ne() {
-            return Err(Error::UpcaseTableChecksum);
+            return Err(DataError::UpcaseTableChecksum.into());
         }
         Ok(())
     }
@@ -121,7 +119,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let entry = self.directory.entry.clone();
         let mut context = with_context!(self.directory.entry.context);
         if !context.opened_entries.add(entry.id()) {
-            return Err(Error::AlreadyOpen);
+            return Err(OperationError::AlreadyOpen.into());
         }
         Ok(Directory { entry, upcase_table: self.directory.upcase_table.clone() })
     }

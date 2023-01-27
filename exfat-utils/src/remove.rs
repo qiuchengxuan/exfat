@@ -1,6 +1,6 @@
 use std::io;
 
-use exfat::error::Error;
+use exfat::error::{Error, OperationError};
 use exfat::io::std::FileIO;
 use exfat::ExFAT;
 use exfat::FileOrDirectory;
@@ -17,7 +17,7 @@ pub fn remove(device: &str, mut path: &str) -> Result<(), Error<io::Error>> {
     match path.rsplit_once('/') {
         Some((base, name)) => {
             let mut directory = match open(root.open()?, &base)? {
-                FileOrDirectory::File(_) => return Err(Error::InvalidInput("Not a directory")),
+                FileOrDirectory::File(_) => return Err(OperationError::NotDirectory.into()),
                 FileOrDirectory::Directory(directory) => directory,
             };
             directory.delete(name)

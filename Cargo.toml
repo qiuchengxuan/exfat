@@ -31,3 +31,4 @@ log-max-level-off = ["log/max_level_off", "log/release_max_level_off"]
 
 [lib]
 name = "exfat"
+doctest = false
