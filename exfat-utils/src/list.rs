@@ -2,17 +2,13 @@ use std::io;
 
 use exfat::error::{Error, OperationError};
 use exfat::io::std::FileIO;
-use exfat::ExFAT;
-use exfat::FileOrDirectory;
+use exfat::{FileOrDirectory, RootDirectory};
 
 use super::filepath::open;
 
-pub fn list(device: &str, path: &str) -> Result<(), Error<io::Error>> {
-    let io = FileIO::open(device).map_err(|e| Error::IO(e))?;
-    let mut exfat = ExFAT::new(io)?;
-    exfat.validate_checksum()?;
-    let mut root = exfat.root_directory()?;
-    root.validate_upcase_table_checksum()?;
+type RootDir = RootDirectory<io::Error, FileIO>;
+
+pub fn list(root: &mut RootDir, path: &str) -> Result<(), Error<io::Error>> {
     let mut directory = match open(root.open()?, &path)? {
         FileOrDirectory::File(_) => return Err(OperationError::NotDirectory.into()),
         FileOrDirectory::Directory(dir) => dir,

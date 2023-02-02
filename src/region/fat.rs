@@ -7,6 +7,16 @@ pub(crate) enum Entry {
     Last,
 }
 
+impl Into<u32> for Entry {
+    fn into(self) -> u32 {
+        match self {
+            Self::Next(next) => next.into(),
+            Self::BadCluster => 0xFFFFFFF7,
+            Self::Last => 0xFFFFFFFF,
+        }
+    }
+}
+
 impl TryFrom<u32> for Entry {
     type Error = u32;
     fn try_from(value: u32) -> Result<Self, u32> {

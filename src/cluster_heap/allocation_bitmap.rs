@@ -37,8 +37,8 @@ pub struct DumbAllocator<IO> {
     io: IOWrapper<IO>,
     base: SectorID,
     fat_info: fat::Info,
-    maybe_available_offset: u32,
     length: u32,
+    maybe_available_offset: u32,
     sector_size_shift: u8,
     num_clusters: u32,
     percent_inuse: u8,
@@ -49,15 +49,10 @@ pub struct DumbAllocator<IO> {
 impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     async fn init(&mut self) -> Result<(), Error<E>> {
         let mut sector_id = self.base;
-        let sector = self.io.read(sector_id).await?;
-        if sector[0][0] & 0x3 != 0x3 {
-            let byte = sector[0][0] | 0x3;
-            self.io.write(self.base, 0, &[byte; 1]).await?;
-        }
         let mut sector = self.io.read(sector_id).await?;
         let mut array: &[[usize; ARRAY_SIZE]] = unsafe { transmute(sector) };
         let sector_size = 1 << self.sector_size_shift;
-        let mut num_available = self.num_clusters;
+        let mut num_available = self.num_clusters - self.maybe_available_offset * 8;
         for i in 0..(self.length as usize / size_of::<usize>()) {
             if i > 0 && i % (sector_size / size_of::<usize>()) == 0 {
                 sector_id += 1u64;
@@ -68,7 +63,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
             num_available -= array[index / ARRAY_SIZE][index % ARRAY_SIZE].count_ones();
         }
         self.num_available_clusters = num_available;
-        trace!("Num available clusters is {}/{}", num_available, self.num_clusters);
+        debug!("Num available clusters is {}/{}", num_available, self.num_clusters);
         Ok(())
     }
 

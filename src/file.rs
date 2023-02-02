@@ -1,5 +1,5 @@
-#[cfg(feature = "max-filename-size-64")]
-pub const MAX_FILENAME_SIZE: usize = 64;
+#[cfg(feature = "max-filename-size-30")]
+pub const MAX_FILENAME_SIZE: usize = 30;
 #[cfg(not(feature = "limit-filename-size"))]
 pub const MAX_FILENAME_SIZE: usize = 510;
 
@@ -19,6 +19,6 @@ impl Default for TouchOptions {
 pub struct FileOptions {
     /// Fragment will produce unperdictable latency when writing,
     /// enabling this option will indicate write operation
-    /// returns DontFragment error instead of allocating fragemnted cluster
+    /// returns DontFragment error instead of filling FAT chain
     pub dont_fragment: bool,
 }

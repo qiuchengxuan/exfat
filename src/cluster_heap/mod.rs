@@ -1,7 +1,8 @@
 pub(crate) mod allocation_bitmap;
 pub(crate) mod context;
 pub(crate) mod directory;
-pub(crate) mod entry;
 pub(crate) mod entryset;
-mod file;
+pub(crate) mod file;
+pub(crate) mod meta;
+pub(crate) mod metadata;
 pub(crate) mod root;

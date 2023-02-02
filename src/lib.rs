@@ -63,17 +63,19 @@ use core::mem;
 use memoffset::offset_of;
 
 pub use cluster_heap::directory::{Directory, FileOrDirectory};
-use cluster_heap::root::RootDirectory as RootDir;
+pub use cluster_heap::file::SeekFrom;
+pub use cluster_heap::root::RootDirectory;
 use error::{DataError, Error, ImplementationError};
-use fs::SectorRef;
 use io::IOWrapper;
+pub use region::data::entryset::primary::DateTime;
+use types::ClusterID;
 
 pub struct ExFAT<IO> {
     io: IOWrapper<IO>,
     serial_number: u32,
     fat_info: fat::Info,
     fs_info: fs::Info,
-    sector_ref: fs::SectorRef,
+    root: ClusterID,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
@@ -90,11 +92,10 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         let sector_size = boot_sector.bytes_per_sector() as usize;
         let fat_offset = boot_sector.fat_offset.to_ne();
         let fat_length = boot_sector.fat_length.to_ne();
-        trace!("FAT offset {} length {}", fat_offset, fat_length);
+        debug!("FAT offset {} length {}", fat_offset, fat_length);
 
         io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
-        let cluster_id = boot_sector.first_cluster_of_root_directory.to_ne();
-        let sector_ref = SectorRef::new(cluster_id.into(), 0);
+        let root = ClusterID::from(boot_sector.first_cluster_of_root_directory.to_ne());
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let fat_info = fat::Info::new(sector_size_shift, fat_offset, fat_length);
         let fs_info = fs::Info {
@@ -102,12 +103,13 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
             sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
             sector_size_shift,
         };
+        debug!("Root directory on cluster {}", root);
         Ok(Self {
             io: IOWrapper::new(io),
             serial_number: boot_sector.volumn_serial_number.to_ne(),
             fs_info,
             fat_info,
-            sector_ref,
+            root,
         })
     }
 
@@ -154,9 +156,9 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         self.serial_number
     }
 
-    pub async fn root_directory(&mut self) -> Result<RootDir<E, IO>, Error<E>> {
+    pub async fn root_directory(&mut self) -> Result<RootDirectory<E, IO>, Error<E>> {
         let io = self.io.clone();
-        RootDir::new(io, self.fat_info, self.fs_info, self.sector_ref).await
+        RootDirectory::new(io, self.fat_info, self.fs_info, self.root).await
     }
 }
 

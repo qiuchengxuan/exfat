@@ -1,12 +1,13 @@
 use bitfield::bitfield;
 #[cfg(feature = "chrono")]
 use chrono::{Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use derive_more::Into;
 
-use super::super::entry_type::RawEntryType;
+use super::super::entry_type::{EntryType, RawEntryType};
 use crate::endian::Little as LE;
 
 bitfield! {
-    #[derive(Copy, Clone, Debug, Default)]
+    #[derive(Copy, Clone, Debug, Default, Into)]
     pub struct Timestamp(u32);
     year_offset, set_year_offset: 31, 25;
     pub month, set_month: 24, 21;
@@ -68,13 +69,25 @@ impl Timestamp {
 }
 
 bitfield! {
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Default, Debug, Into)]
     pub struct FileAttributes(u16);
     pub read_only, set_read_only: 0, 0;
     pub hidden, set_hidden: 1, 1;
     pub system, set_system: 2, 2;
     pub directory, set_directory: 4, 4;
     pub archive, set_archive: 5, 5;
+}
+
+impl FileAttributes {
+    pub fn new(directory: bool) -> Self {
+        let mut attributes = Self::default();
+        if directory {
+            attributes.set_directory(1);
+        } else {
+            attributes.set_archive(1);
+        }
+        attributes
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -108,6 +121,22 @@ pub struct DateTime {
     pub utc_offset: UTCOffset,
 }
 
+#[cfg(feature = "extern-datetime-now")]
+extern "Rust" {
+    pub(crate) fn exfat_datetime_now() -> DateTime;
+}
+
+impl DateTime {
+    pub fn now() -> Self {
+        match () {
+            #[cfg(feature = "extern-datetime-now")]
+            () => unsafe { exfat_datetime_now() },
+            #[cfg(not(feature = "extern-datetime-now"))]
+            () => Self::default(),
+        }
+    }
+}
+
 #[cfg(feature = "chrono")]
 impl DateTime {
     pub fn localtime(&self) -> Result<chrono::DateTime<Local>, ()> {
@@ -136,20 +165,40 @@ pub struct FileDirectory {
     pub(crate) entry_type: RawEntryType,
     pub(crate) secondary_count: u8,
     pub(crate) set_checksum: LE<u16>,
-    file_attributes: LE<u16>,
+    pub(crate) file_attributes: LE<u16>,
     _reserved1: [u8; 2],
     create_timestamp: LE<u32>,
     last_modified_timestamp: LE<u32>,
     last_accessed_timestamp: LE<u32>,
-    pub create_10ms_increment: u8,
-    pub last_modified_10ms_increment: u8,
-    pub create_utc_offset: UTCOffset,
-    pub last_modified_utc_offset: UTCOffset,
-    pub last_accessed_utc_offset: UTCOffset,
+    create_10ms_increment: u8,
+    last_modified_10ms_increment: u8,
+    create_utc_offset: UTCOffset,
+    last_modified_utc_offset: UTCOffset,
+    last_accessed_utc_offset: UTCOffset,
     _reserved2: [u8; 7],
 }
 
 impl FileDirectory {
+    pub(crate) fn new(secondary_count: u8, directory: bool) -> Self {
+        let now = DateTime::now();
+        let timestamp: LE<u32> = u32::from(now.timestamp).into();
+        let millis = (now.millisecond / 10) as u8;
+        FileDirectory {
+            entry_type: RawEntryType::new(EntryType::FileDirectory, true),
+            secondary_count,
+            file_attributes: u16::from(FileAttributes::new(directory)).into(),
+            create_timestamp: timestamp,
+            create_10ms_increment: millis,
+            create_utc_offset: now.utc_offset,
+            last_modified_timestamp: timestamp,
+            last_modified_10ms_increment: millis,
+            last_modified_utc_offset: now.utc_offset,
+            last_accessed_timestamp: timestamp,
+            last_accessed_utc_offset: now.utc_offset,
+            ..Default::default()
+        }
+    }
+
     pub fn file_attributes(&self) -> FileAttributes {
         FileAttributes(self.file_attributes.to_ne())
     }
@@ -188,4 +237,29 @@ impl FileDirectory {
         self.last_accessed_timestamp = datetime.timestamp.0.into();
         self.last_accessed_utc_offset = datetime.utc_offset;
     }
+}
+
+pub(crate) struct Checksum(u16);
+
+impl Checksum {
+    pub(crate) fn new() -> Self {
+        Self(0)
+    }
+
+    pub(crate) fn write(&mut self, value: u16) {
+        self.0 = if self.0 & 1 > 0 { 0x8000 } else { 0 } + (self.0 >> 1) + value
+    }
+
+    pub(crate) fn sum(&self) -> u16 {
+        self.0
+    }
+}
+
+pub(crate) fn name_hash(name: &str) -> u16 {
+    let mut checksum = Checksum::new();
+    for ch in name.chars() {
+        checksum.write(ch as u16);
+        checksum.write(((ch as u32) >> 16) as u16);
+    }
+    checksum.sum()
 }

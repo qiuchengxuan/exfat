@@ -1,3 +1,4 @@
+use core::fmt::Display;
 use core::mem::MaybeUninit;
 
 use crate::file::MAX_FILENAME_SIZE;
@@ -16,6 +17,12 @@ pub(crate) struct EntryID {
 pub(crate) struct EntryRef {
     pub sector_ref: SectorRef,
     pub index: u8, // Within sector
+}
+
+impl Display for EntryRef {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}", self.sector_ref, self.index)
+    }
 }
 
 impl EntryRef {

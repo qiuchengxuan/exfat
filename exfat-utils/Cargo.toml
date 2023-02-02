@@ -8,7 +8,7 @@ repository = "https://github.com/qiuchengxuan/exfat"
 [dependencies]
 chrono = "0.4"
 clap = { version = "3", features = ["derive"] }
-embedded-exfat = { path = "..", features = ["chrono"] }
+embedded-exfat = { path = "..", features = ["chrono", "extern-datetime-now"] }
 env_logger = "0.10"
 log = "0.4"
 pretty-hex = "0.2"

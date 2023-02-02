@@ -6,11 +6,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::directory::Directory;
-use super::entry::Meta;
+use super::metadata::Metadata;
 use super::{
     allocation_bitmap::AllocationBitmap,
     context::{Context, OpenedEntries},
-    entry::{with_context, ClusterEntry},
+    meta::{with_context, MetaFileDirectory},
 };
 use crate::endian::Little as LE;
 use crate::error::{DataError, Error, OperationError};
@@ -22,6 +22,7 @@ use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::RawEntry;
 use crate::sync::Mutex;
+use crate::types::{ClusterID, SectorID};
 
 pub struct RootDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
     directory: Directory<E, IO>,
@@ -35,11 +36,12 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         mut io: IOWrapper<IO>,
         fat_info: fat::Info,
         fs_info: fs::Info,
-        sector_ref: SectorRef,
+        cluster_id: ClusterID,
     ) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<22>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
+        let sector_ref = SectorRef::new(cluster_id, 0);
         let sector = io.read(sector_ref.id(&fs_info)).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
@@ -65,38 +67,40 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
             let region =
                 allocation_bitmap.ok_or(Error::Data(DataError::AllocationBitmapMissing))?;
             let first_cluster = region.first_cluster.to_ne();
-            let base = first_cluster as u64 * fs_info.sector_size() as u64;
+            let sector_offset = (first_cluster - 2) * fs_info.sectors_per_cluster();
+            let base = SectorID::from((fs_info.heap_offset + sector_offset) as u64);
             let length = region.data_length.to_ne() as u32;
-            trace!("Allocation bitmap found at cluster {} length {}", first_cluster, length);
-            let bitmap = AllocationBitmap::new(io.clone(), base.into(), fat_info, length).await?;
+            debug!("Allocation bitmap found at cluster {} length {}", first_cluster, length);
+            let io = io.clone();
+            let bitmap = AllocationBitmap::new(io, base, fat_info, length).await?;
             Arc::new(Mutex::new(Context {
                 allocation_bitmap: bitmap,
                 opened_entries: OpenedEntries { entries: Vec::with_capacity(4) },
             }))
         };
         let cluster_id = upcase_table.first_cluster.to_ne();
-        trace!("Upcase table found at cluster id {}", cluster_id);
+        let length = upcase_table.data_length.to_ne();
+        debug!("Upcase table found at cluster {} length {}", cluster_id, length);
         let sector = io.read(SectorRef::new(cluster_id.into(), 0).id(&fs_info)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
-        let mut meta = Meta::new(Default::default());
+        let mut metadata = Metadata::new(Default::default());
         let options = FileOptions::default();
-        meta.stream_extension.general_secondary_flags.set_fat_chain();
-        let directory = Directory {
-            entry: ClusterEntry { io, context, fat_info, fs_info, meta, options, sector_ref },
-            upcase_table: Rc::new((*array).into()),
-        };
+        metadata.stream_extension.general_secondary_flags.set_fat_chain();
+        let meta =
+            MetaFileDirectory { io, context, fat_info, fs_info, metadata, options, sector_ref };
+        let directory = Directory { meta, upcase_table: Rc::new((*array).into()) };
         Ok(Self { directory, upcase_table, volumn_label })
     }
 
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
-        let fs_info = &self.directory.entry.fs_info;
+        let fs_info = &self.directory.meta.fs_info;
         let first_sector = SectorRef::new(first_cluster.into(), 0).id(&fs_info);
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = fs_info.sector_size();
         let num_sectors = data_length / sector_size as u64;
-        let io = &mut self.directory.entry.io;
+        let io = &mut self.directory.meta.io;
         for i in 0..num_sectors {
             let sector = io.read(first_sector + i).await?;
             checksum.write(crate::io::flatten(sector));
@@ -118,12 +122,12 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
     }
 
     pub async fn open(&mut self) -> Result<Directory<E, IO>, Error<E>> {
-        let entry = self.directory.entry.clone();
-        let mut context = with_context!(self.directory.entry.context);
-        if !context.opened_entries.add(entry.id()) {
+        let meta = self.directory.meta.clone();
+        let mut context = with_context!(self.directory.meta.context);
+        if !context.opened_entries.add(meta.id()) {
             return Err(OperationError::AlreadyOpen.into());
         }
-        Ok(Directory { entry, upcase_table: self.directory.upcase_table.clone() })
+        Ok(Directory { meta, upcase_table: self.directory.upcase_table.clone() })
     }
 }
 

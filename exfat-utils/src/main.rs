@@ -2,16 +2,17 @@ mod append;
 mod cat;
 pub(crate) mod filepath;
 mod list;
+mod put;
 mod remove;
 mod touch;
 mod truncate;
 
 use clap::Parser;
+use exfat::io::std::FileIO;
+use exfat::{DateTime, ExFAT};
 
 #[derive(Debug, clap::Args)]
 struct List {
-    /// Block device or file that formatted with exFAT
-    device: String,
     /// Specify path to list, default to root directory
     #[clap(default_value = "/")]
     path: String,
@@ -19,34 +20,26 @@ struct List {
 
 #[derive(Debug, clap::Args)]
 struct Cat {
-    /// Block device or file that formatted with exFAT
-    device: String,
     /// Specify path to concatenate
     path: String,
 }
 
 #[derive(Debug, clap::Args)]
 struct Touch {
-    /// Block device or file that formatted with exFAT
-    device: String,
     /// Specify path to touch
     path: String,
 }
 
 #[derive(Debug, clap::Args)]
 struct Append {
-    /// Block device or file that formatted with exFAT
-    device: String,
     /// Specify path to touch
     path: String,
-    /// Specify file to append
-    file: String,
+    /// Specify source file to append
+    source: String,
 }
 
 #[derive(Debug, clap::Args)]
 struct Truncate {
-    /// Block device or file that formatted with exFAT
-    device: String,
     /// Specify path to touch
     path: String,
     /// Specify size to truncate
@@ -54,9 +47,13 @@ struct Truncate {
 }
 
 #[derive(Debug, clap::Args)]
+struct Put {
+    path: String,
+    source: String,
+}
+
+#[derive(Debug, clap::Args)]
 struct Remove {
-    /// Block device or file that formatted with exFAT
-    device: String,
     /// Specify path to delete
     path: String,
 }
@@ -74,6 +71,8 @@ enum Action {
     Append(Append),
     /// Truncate file
     Truncate(Truncate),
+    /// Put file
+    Put(Put),
     /// Remove file
     #[clap(name = "rm")]
     Remove(Remove),
@@ -86,8 +85,17 @@ struct Args {
     quiet: bool,
     #[clap(short, action = clap::ArgAction::Count)]
     verbosity: u8,
+    /// block device or file that formatted with exfat
+    #[clap(short, long)]
+    device: String,
     #[clap(subcommand)]
     action: Action,
+}
+
+#[no_mangle]
+fn exfat_datetime_now() -> DateTime {
+    let now = chrono::Utc::now();
+    now.into()
 }
 
 fn main() {
@@ -100,13 +108,21 @@ fn main() {
     };
     log::set_max_level(level);
     env_logger::builder().filter(None, level).target(env_logger::Target::Stdout).init();
+
+    let io = FileIO::open(&args.device).unwrap();
+    let mut exfat = ExFAT::new(io).unwrap();
+    exfat.validate_checksum().unwrap();
+    let mut root = exfat.root_directory().unwrap();
+    root.validate_upcase_table_checksum().unwrap();
+
     let result = match args.action {
-        Action::List(args) => list::list(&args.device, &args.path),
-        Action::Cat(args) => cat::cat(&args.device, &args.path),
-        Action::Touch(args) => touch::touch(&args.device, &args.path),
-        Action::Append(args) => append::append(&args.device, &args.path, &args.file),
-        Action::Truncate(args) => truncate::truncate(&args.device, &args.path, args.size),
-        Action::Remove(args) => remove::remove(&args.device, &args.path),
+        Action::List(args) => list::list(&mut root, &args.path),
+        Action::Cat(args) => cat::cat(&mut root, &args.path),
+        Action::Touch(args) => touch::touch(&mut root, &args.path),
+        Action::Append(args) => append::append(&mut root, &args.path, &args.source),
+        Action::Truncate(args) => truncate::truncate(&mut root, &args.path, args.size),
+        Action::Put(args) => put::put(&mut root, &args.path, &args.source),
+        Action::Remove(args) => remove::remove(&mut root, &args.path),
     };
     if let Some(error) = result.err() {
         eprintln!("{:?}", error);

@@ -1,3 +1,5 @@
+use core::fmt::Display;
+
 use crate::types::{ClusterID, SectorID};
 
 #[derive(Copy, Clone, Debug)]
@@ -29,6 +31,12 @@ impl Info {
 pub struct SectorRef {
     pub cluster_id: ClusterID,
     pub sector_index: u32,
+}
+
+impl Display for SectorRef {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}", self.cluster_id, self.sector_index)
+    }
 }
 
 impl SectorRef {
