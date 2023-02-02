@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 pub(crate) struct UpcaseTable(pub [u16; 128]);
 
 impl UpcaseTable {
@@ -8,11 +10,11 @@ impl UpcaseTable {
         }
     }
 
-    pub fn to_upper(&self, name: &str) -> heapless::String<255> {
+    pub fn to_upper(&self, name: &str) -> heapless::String<510> {
         let mut upcase = heapless::String::new();
         for ch in name.chars() {
             let ch = unsafe { char::from_u32_unchecked(self.lookup(ch as u16) as u32) };
-            upcase.push(ch).unwrap();
+            upcase.push(ch).ok();
         }
         upcase
     }
@@ -49,7 +51,8 @@ impl Default for UpcaseTable {
 
 impl From<[crate::endian::Little<u16>; 128]> for UpcaseTable {
     fn from(array: [crate::endian::Little<u16>; 128]) -> Self {
-        let mut table = [0u16; 128];
+        let table: MaybeUninit<[u16; 128]> = MaybeUninit::uninit();
+        let mut table = unsafe { table.assume_init() };
         for i in 0..array.len() {
             table[i] = array[i].to_ne();
         }

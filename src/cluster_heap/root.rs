@@ -25,7 +25,7 @@ use crate::sync::Mutex;
 pub struct RootDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
     directory: Directory<E, IO>,
     upcase_table: region::data::UpcaseTable,
-    volumn_label: Option<heapless::String<11>>,
+    volumn_label: Option<heapless::String<22>>,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
@@ -36,7 +36,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         fs_info: fs::Info,
         sector_ref: SectorRef,
     ) -> Result<Self, Error<E>> {
-        let mut volumn_label: Option<heapless::String<11>> = None;
+        let mut volumn_label: Option<heapless::String<22>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
         let sector = io.read(sector_ref.id(&fs_info)).await?;

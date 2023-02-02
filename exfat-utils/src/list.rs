@@ -32,9 +32,9 @@ pub fn list(device: &str, path: &str) -> Result<(), Error<io::Error>> {
         let localtime = modified_at.localtime().unwrap();
         print!(" {}", localtime.format("%Y-%m-%d %H:%M:%S"));
         if attrs.directory() > 0 {
-            println!(" {}/", entryset.name);
+            println!(" {}/", entryset.name());
         } else {
-            println!(" {}", entryset.name);
+            println!(" {}", entryset.name());
         }
         false
     })?;

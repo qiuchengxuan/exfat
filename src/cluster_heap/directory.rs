@@ -1,11 +1,12 @@
 use core::fmt::Debug;
-use core::mem;
+use core::mem::{self, MaybeUninit};
+use core::slice;
 
 use alloc::rc::Rc;
 
 use super::entry::{name_hash, with_context};
 use super::entry::{ClusterEntry, Meta, TouchOption};
-use super::entryset::EntrySet;
+use super::entryset::{EntryRef, EntrySet};
 use super::file::File;
 use crate::error::{DataError, Error, OperationError};
 use crate::fs::SectorRef;
@@ -75,7 +76,9 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 index += secondary_remain as usize;
                 continue;
             }
-            let mut entry_name = heapless::String::<255>::new();
+            let array: MaybeUninit<[u16; 255]> = MaybeUninit::uninit();
+            let mut array: [u16; 255] = unsafe { array.assume_init() };
+            let mut cursor = 0;
             while secondary_remain > 0 {
                 secondary_remain -= 1;
                 index += 1;
@@ -86,20 +89,29 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                     entries = unsafe { mem::transmute(sector) }
                 }
                 let entry: &Filename = unsafe { mem::transmute(&entries[index / 16][index % 16]) };
-                for ch in entry.filename {
-                    let ch = unsafe { char::from_u32_unchecked(ch.to_ne() as u32) };
-                    entry_name.push(ch).ok();
-                }
+                array[cursor..cursor + 15].copy_from_slice(&entry.filename[..]);
+                cursor += 15;
             }
-            entry_name.truncate(stream_extension.custom_defined.name_length as usize);
-            let entry_set = EntrySet {
-                name: entry_name,
+            let name_length = stream_extension.custom_defined.name_length as usize;
+            for i in 0..name_length {
+                array[i] = u16::from_le(array[i]);
+            }
+            let slice = unsafe { slice::from_raw_parts(&array[0], name_length) };
+            let mut buf: [u8; 510] = unsafe { mem::transmute(array) };
+            let mut cursor = 0;
+            for &ch in slice {
+                let ch = unsafe { char::from_u32_unchecked(ch as u32) };
+                ch.encode_utf8(&mut buf[cursor..]);
+                cursor += ch.len_utf8();
+            }
+            let entryset = EntrySet {
+                name_bytes: buf,
+                name_length: cursor as u8,
                 file_directory,
                 stream_extension,
-                sector_ref: entryset_sector_ref,
-                entry_index: entryset_index as u8,
+                entry_ref: EntryRef::new(entryset_sector_ref, entryset_index as u8),
             };
-            if let Some(retval) = h(&entry_set) {
+            if let Some(retval) = h(&entryset) {
                 return Ok(Some(retval));
             }
         }
@@ -126,6 +138,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
 
     /// Find a file or directory matching specified name
     pub async fn find(&mut self, name: &str) -> Result<Option<EntrySet>, Error<E>> {
+        let name_length = name.chars().count();
         let upcase_table = self.upcase_table.clone();
         let hash = name_hash(&self.upcase_table.to_upper(name));
         self.walk_matches(
@@ -134,15 +147,15 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 if !entry_type.in_use() {
                     return false;
                 }
-                let name_length = stream_extension.custom_defined.name_length;
+                let length = stream_extension.custom_defined.name_length;
                 let name_hash = stream_extension.custom_defined.name_hash.to_ne();
-                if name_length as usize != name.len() || name_hash != hash {
+                if length as usize != name_length || name_hash != hash {
                     return false;
                 }
                 true
             },
             |entryset| {
-                if upcase_table.equals(name, &entryset.name) {
+                if upcase_table.equals(name, &entryset.name()) {
                     Some(entryset.clone())
                 } else {
                     None
@@ -204,16 +217,16 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         };
 
         let fs_info = self.entry.fs_info;
-        let mut sector_id = meta.sector_ref.id(&fs_info);
+        let mut sector_id = meta.entry_ref.sector_ref.id(&fs_info);
         let secondary_count = meta.file_directory.secondary_count as usize;
-        let last_index = meta.entry_index as usize + secondary_count;
+        let last_index = meta.entry_ref.index as usize + secondary_count;
         let sector_size = fs_info.sector_size() as usize;
         let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
-            true => self.entry.next(meta.sector_ref).await?.id(&fs_info),
+            true => self.entry.next(meta.entry_ref.sector_ref).await?.id(&fs_info),
             false => sector_id,
         };
 
-        let mut offset = meta.entry_index as usize * ENTRY_SIZE;
+        let mut offset = meta.entry_ref.index as usize * ENTRY_SIZE;
         let io = &mut self.entry.io;
         io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
         offset = (offset + ENTRY_SIZE) % sector_size;

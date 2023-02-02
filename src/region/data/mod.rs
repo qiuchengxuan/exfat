@@ -36,9 +36,9 @@ pub(crate) struct VolumnLabel {
     _reserved: [u8; 8],
 }
 
-impl Into<heapless::String<11>> for VolumnLabel {
-    fn into(self) -> heapless::String<11> {
-        let mut label: heapless::String<11> = heapless::String::new();
+impl Into<heapless::String<22>> for VolumnLabel {
+    fn into(self) -> heapless::String<22> {
+        let mut label: heapless::String<22> = heapless::String::new();
         for i in 0..self.character_count {
             let ch = self.volumn_label[i as usize].to_ne();
             label.push(unsafe { char::from_u32_unchecked(ch as u32) }).ok();

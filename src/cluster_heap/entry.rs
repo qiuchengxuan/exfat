@@ -1,8 +1,9 @@
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use core::mem::transmute;
 
 use super::context::Context;
-use super::entryset::{EntryID, EntrySet};
+use super::entryset::{EntryID, EntryRef, EntrySet};
 use crate::error::{DataError, Error, OperationError};
 use crate::fat;
 use crate::fs::{self, SectorRef};
@@ -56,18 +57,18 @@ pub(crate) fn name_hash(name: &str) -> u16 {
 
 #[derive(Clone)]
 pub(crate) struct Meta {
-    pub name: heapless::String<255>,
+    pub name: String,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub sector_ref: SectorRef,
-    pub entry_index: u8, // Within sector
+    pub entry_ref: EntryRef,
     pub dirty: bool,
 }
 
 impl Meta {
     pub fn new(entryset: EntrySet) -> Self {
-        let EntrySet { name, file_directory, stream_extension, sector_ref, entry_index } = entryset;
-        Self { name, file_directory, stream_extension, sector_ref, entry_index, dirty: false }
+        let name = entryset.name().to_string();
+        let EntrySet { file_directory, stream_extension, entry_ref, .. } = entryset;
+        Self { name, file_directory, stream_extension, entry_ref, dirty: false }
     }
 
     pub fn length(&self) -> u64 {
@@ -106,7 +107,7 @@ impl Meta {
             checksum.write(ch as u8 as u16);
             checksum.write(ch as u16 >> 8);
         }
-        for _ in 0..(15 - self.name.len() % 15) * 2 {
+        for _ in 0..(15 - self.name.chars().count() % 15) * 2 {
             checksum.write(0);
         }
         self.file_directory.set_checksum = checksum.sum().into();
@@ -125,7 +126,8 @@ pub(crate) struct ClusterEntry<IO> {
 
 impl<IO> ClusterEntry<IO> {
     pub(crate) fn id(&self) -> EntryID {
-        EntryID { sector_id: self.meta.sector_ref.id(&self.fs_info), index: self.meta.entry_index }
+        let entry_ref = &self.meta.entry_ref;
+        EntryID { sector_id: entry_ref.sector_ref.id(&self.fs_info), index: entry_ref.index }
     }
 }
 
@@ -212,6 +214,10 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
             let bytes = u32::to_le_bytes(cluster_id.into());
             self.io.write(sector_id, self.fat_info.offset(last), &bytes).await?;
         }
+        if meta.file_directory.file_attributes().directory() > 0 {
+            let length = meta.length() + cluster_size;
+            meta.stream_extension.custom_defined.valid_data_length = length.into()
+        }
         meta.stream_extension.data_length = (meta.capacity() + cluster_size).into();
         meta.update_checksum();
         Ok(cluster_id)
@@ -219,17 +225,17 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
 
     pub async fn sync(&mut self) -> Result<(), Error<E>> {
         let meta = &mut self.meta;
-        if !meta.sector_ref.cluster_id.valid() {
+        if !meta.entry_ref.sector_ref.cluster_id.valid() {
             // Probably root directory
             return Ok(());
         }
         if meta.dirty {
             trace!("Flush metadata since dirty");
-            let mut sector_id = meta.sector_ref.id(&self.fs_info);
+            let mut sector_id = meta.entry_ref.sector_ref.id(&self.fs_info);
             let bytes: &RawEntry = unsafe { transmute(&meta.file_directory) };
-            let offset = meta.entry_index as usize * ENTRY_SIZE;
+            let offset = meta.entry_ref.index as usize * ENTRY_SIZE;
             self.io.write(sector_id, offset, &bytes[..]).await?;
-            let mut offset = (meta.entry_index as usize + 1) * ENTRY_SIZE;
+            let mut offset = (meta.entry_ref.index as usize + 1) * ENTRY_SIZE;
             if offset == self.fs_info.sector_size() as usize {
                 offset = 0;
                 sector_id += 1u32;

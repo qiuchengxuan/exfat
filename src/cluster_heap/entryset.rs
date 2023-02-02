@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 use crate::fs::{self, SectorRef};
 use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
@@ -9,18 +11,43 @@ pub(crate) struct EntryID {
     pub index: u8, // Max sector size / enty size = 4096 / 32 = 128
 }
 
-#[derive(Clone, Default)]
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct EntryRef {
+    pub sector_ref: SectorRef,
+    pub index: u8, // Within sector
+}
+
+impl EntryRef {
+    pub fn new(sector_ref: SectorRef, index: u8) -> Self {
+        Self { sector_ref, index }
+    }
+}
+
+#[derive(Clone)]
 pub struct EntrySet {
-    pub name: heapless::String<255>,
+    pub(crate) name_bytes: [u8; 510],
+    pub(crate) name_length: u8,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub(crate) sector_ref: SectorRef,
-    pub(crate) entry_index: u8,
+    pub(crate) entry_ref: EntryRef,
+}
+
+impl Default for EntrySet {
+    fn default() -> Self {
+        let bytes: MaybeUninit<[u8; 510]> = MaybeUninit::uninit();
+        Self {
+            name_bytes: unsafe { bytes.assume_init() },
+            name_length: 0,
+            file_directory: Default::default(),
+            stream_extension: Default::default(),
+            entry_ref: Default::default(),
+        }
+    }
 }
 
 impl EntrySet {
-    pub(crate) fn id(&self, fs_info: &fs::Info) -> EntryID {
-        EntryID { sector_id: self.sector_ref.id(fs_info), index: self.entry_index }
+    pub fn name(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(&self.name_bytes[..self.name_length as usize]) }
     }
 
     pub fn in_use(&self) -> bool {
@@ -34,5 +61,9 @@ impl EntrySet {
     pub fn valid_data_length(&self) -> u64 {
         let valid_data_length = self.stream_extension.custom_defined.valid_data_length;
         valid_data_length.to_ne()
+    }
+
+    pub(crate) fn id(&self, fs_info: &fs::Info) -> EntryID {
+        EntryID { sector_id: self.entry_ref.sector_ref.id(fs_info), index: self.entry_ref.index }
     }
 }

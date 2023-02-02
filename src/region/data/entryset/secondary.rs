@@ -48,9 +48,9 @@ pub struct StreamExtension {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-#[repr(C, packed(1))]
+#[repr(C, packed(2))]
 pub(crate) struct Filename {
     pub entry_type: RawEntryType,
     general_secondary_flags: u8,
-    pub filename: [LE<u16>; 15],
+    pub filename: [u16; 15],
 }

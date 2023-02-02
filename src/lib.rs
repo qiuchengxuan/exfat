@@ -2,7 +2,9 @@
 //!
 //! > An exFAT Library in rust mainly focusing on `no_std` embedded system with async support
 //!
-//! `alloc` is mandatory for this crate, although memory allocation is minimized, 256B for upcase table and 12~16B for each file or directory, including root directory.
+//! `alloc` is mandatory for this crate, although memory allocation is minimized,
+//! 256B for upcase table and 12B plus name size for each file or directory,
+//! and 12B for root directory.
 //!
 //! ## Using this crate
 //!
