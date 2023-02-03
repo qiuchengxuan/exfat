@@ -5,10 +5,11 @@ use core::slice;
 use alloc::rc::Rc;
 
 use super::entry::{name_hash, with_context};
-use super::entry::{ClusterEntry, Meta, TouchOption};
+use super::entry::{ClusterEntry, Meta};
 use super::entryset::{EntryRef, EntrySet};
 use super::file::File;
 use crate::error::{DataError, Error, OperationError};
+use crate::file::{FileOptions, TouchOptions, MAX_FILENAME_SIZE};
 use crate::fs::SectorRef;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory};
@@ -76,8 +77,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 index += secondary_remain as usize;
                 continue;
             }
-            let array: MaybeUninit<[u16; 255]> = MaybeUninit::uninit();
-            let mut array: [u16; 255] = unsafe { array.assume_init() };
+            let array: MaybeUninit<[u16; MAX_FILENAME_SIZE / 2]> = MaybeUninit::uninit();
+            let mut array: [u16; MAX_FILENAME_SIZE / 2] = unsafe { array.assume_init() };
             let mut cursor = 0;
             while secondary_remain > 0 {
                 secondary_remain -= 1;
@@ -88,6 +89,9 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                     let sector = self.entry.io.read(sector_ref.id(&fs_info)).await?;
                     entries = unsafe { mem::transmute(sector) }
                 }
+                if cfg!(feature = "limit-max-filename-size") && cursor + 15 > array.len() {
+                    continue;
+                }
                 let entry: &Filename = unsafe { mem::transmute(&entries[index / 16][index % 16]) };
                 array[cursor..cursor + 15].copy_from_slice(&entry.filename[..]);
                 cursor += 15;
@@ -97,7 +101,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 array[i] = u16::from_le(array[i]);
             }
             let slice = unsafe { slice::from_raw_parts(&array[0], name_length) };
-            let mut buf: [u8; 510] = unsafe { mem::transmute(array) };
+            let mut buf: [u8; MAX_FILENAME_SIZE] = unsafe { mem::transmute(array) };
             let mut cursor = 0;
             for &ch in slice {
                 let ch = unsafe { char::from_u32_unchecked(ch as u32) };
@@ -166,16 +170,14 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
     }
 
     /// Change current directory timestamp
-    pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
-        self.entry.touch(datetime, option).await?;
+    pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
+        self.entry.touch(datetime, opts).await?;
         self.entry.io.flush().await
     }
 
     /// Open a file or directory
-    pub async fn open(&mut self, name: &str) -> Result<FileOrDirectory<E, IO>, Error<E>> {
-        debug!("Open with name {}", name);
-        let future = self.find(name);
-        let entryset = future.await?.ok_or(Error::Operation(OperationError::NotFound))?;
+    pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDirectory<E, IO>, Error<E>> {
+        trace!("Open {}", entryset.name());
         let mut context = with_context!(self.entry.context);
         if !context.opened_entries.add(entryset.id(&self.entry.fs_info)) {
             return Err(OperationError::AlreadyOpen.into());
@@ -186,7 +188,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         let entry = ClusterEntry {
             io: self.entry.io.clone(),
             context: self.entry.context.clone(),
-            meta: Meta::new(entryset),
+            meta: Meta::new(entryset.clone()),
+            options: FileOptions::default(),
             sector_ref,
             ..self.entry
         };
@@ -201,9 +204,9 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
     }
 
     /// Delete a file or directory
-    pub async fn delete(&mut self, name: &str) -> Result<(), Error<E>> {
-        debug!("Delete file or directory {}", name);
-        let file_or_directory = self.open(name).await?;
+    pub async fn delete(&mut self, entryset: &EntrySet) -> Result<(), Error<E>> {
+        debug!("Delete file or directory {}", entryset.name());
+        let file_or_directory = self.open(entryset).await?;
         let meta = match file_or_directory {
             FileOrDirectory::Directory(mut directory) => {
                 if directory.walk(|_| true).await?.is_some() {

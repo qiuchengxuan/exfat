@@ -1,7 +1,8 @@
 use core::fmt::Debug;
 
-use super::entry::{ClusterEntry, TouchOption};
+use super::entry::ClusterEntry;
 use crate::error::{Error, InputError, OperationError};
+use crate::file::{FileOptions, TouchOptions};
 use crate::fs::SectorRef;
 use crate::region::data::entryset::primary::DateTime;
 
@@ -25,6 +26,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         let size = entry.meta.length();
         Self { entry, sector_ref, size, cursor: 0, dirty: false }
     }
+
+    pub fn change_options(&mut self, f: impl Fn(&mut FileOptions)) {
+        f(&mut self.entry.options)
+    }
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
@@ -34,8 +39,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     }
 
     /// Change file timestamp, will not take effect immediately untill flush or sync_all called
-    pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
-        self.entry.touch(datetime, option).await?;
+    pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
+        self.entry.touch(datetime, opts).await?;
         self.entry.io.flush().await
     }
 

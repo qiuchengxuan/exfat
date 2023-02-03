@@ -25,6 +25,16 @@ pub enum InputError {
 }
 
 #[derive(Debug)]
+pub enum AllocationError {
+    /// Allocation-not-possible is set in file metadata
+    NotPossible,
+    /// Need fragment while dont-fragment is set in file options
+    Fragment,
+    /// No more cluster available
+    NoMoreCluster,
+}
+
+#[derive(Debug)]
 pub enum OperationError {
     AlreadyOpen,
     NotFound,
@@ -33,8 +43,6 @@ pub enum OperationError {
     AlreadyExists,
     DirectoryNotEmpty,
     EOF,
-    ClusterAllocation,
-    AllocationNotPossible,
 }
 
 pub enum Error<E> {
@@ -43,6 +51,7 @@ pub enum Error<E> {
     Implementation(ImplementationError),
     Input(InputError),
     Operation(OperationError),
+    Allocation(AllocationError),
 }
 
 impl<E: Debug> Debug for Error<E> {
@@ -53,6 +62,7 @@ impl<E: Debug> Debug for Error<E> {
             Self::Implementation(e) => write!(f, "{:?}", e),
             Self::Input(e) => write!(f, "{:?}", e),
             Self::Operation(e) => write!(f, "{:?}", e),
+            Self::Allocation(e) => write!(f, "{:?}", e),
         }
     }
 }
@@ -71,3 +81,4 @@ from_error!(DataError, Data);
 from_error!(ImplementationError, Implementation);
 from_error!(InputError, Input);
 from_error!(OperationError, Operation);
+from_error!(AllocationError, Allocation);

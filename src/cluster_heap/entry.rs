@@ -4,8 +4,9 @@ use core::mem::transmute;
 
 use super::context::Context;
 use super::entryset::{EntryID, EntryRef, EntrySet};
-use crate::error::{DataError, Error, OperationError};
+use crate::error::{AllocationError, DataError, Error, OperationError};
 use crate::fat;
+use crate::file::{FileOptions, TouchOptions};
 use crate::fs::{self, SectorRef};
 use crate::io::IOWrapper;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
@@ -121,6 +122,7 @@ pub(crate) struct ClusterEntry<IO> {
     pub fat_info: fat::Info,
     pub fs_info: fs::Info,
     pub meta: Meta,
+    pub options: FileOptions,
     pub sector_ref: SectorRef,
 }
 
@@ -128,18 +130,6 @@ impl<IO> ClusterEntry<IO> {
     pub(crate) fn id(&self) -> EntryID {
         let entry_ref = &self.meta.entry_ref;
         EntryID { sector_id: entry_ref.sector_ref.id(&self.fs_info), index: entry_ref.index }
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct TouchOption {
-    pub access: bool,
-    pub modified: bool,
-}
-
-impl Default for TouchOption {
-    fn default() -> Self {
-        Self { access: true, modified: true }
     }
 }
 
@@ -169,12 +159,12 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
         }
     }
 
-    pub async fn touch(&mut self, datetime: DateTime, option: TouchOption) -> Result<(), Error<E>> {
+    pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
         let meta = &mut self.meta;
-        if option.access {
+        if opts.access {
             meta.file_directory.update_last_accessed_timestamp(datetime);
         }
-        if option.modified {
+        if opts.modified {
             meta.file_directory.update_last_modified_timestamp(datetime);
         }
         meta.update_checksum();
@@ -186,11 +176,11 @@ impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
 impl<E, IO: crate::io::IO<Error = E>> ClusterEntry<IO> {
     pub async fn allocate(&mut self, last: ClusterID) -> Result<ClusterID, Error<E>> {
         if !self.meta.stream_extension.general_secondary_flags.allocation_possible() {
-            return Err(OperationError::AllocationNotPossible.into());
+            return Err(AllocationError::NotPossible.into());
         }
+        let fragment = !self.options.dont_fragment;
         let mut context = with_context!(self.context);
-        // XXX: prefer next cluster-id
-        let cluster_id = context.allocation_bitmap.allocate().await?;
+        let cluster_id = context.allocation_bitmap.allocate(last, fragment).await?;
 
         let cluster_size = self.fs_info.cluster_size() as u64;
         let meta = &mut self.meta;

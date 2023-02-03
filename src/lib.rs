@@ -49,6 +49,7 @@ mod cluster_heap;
 mod endian;
 pub mod error;
 mod fat;
+pub mod file;
 pub(crate) mod fs;
 pub mod io;
 mod region;

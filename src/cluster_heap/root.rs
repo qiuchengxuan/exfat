@@ -15,6 +15,7 @@ use super::{
 use crate::endian::Little as LE;
 use crate::error::{DataError, Error, OperationError};
 use crate::fat;
+use crate::file::FileOptions;
 use crate::fs::{self, SectorRef};
 use crate::io::IOWrapper;
 use crate::region;
@@ -78,9 +79,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let sector = io.read(SectorRef::new(cluster_id.into(), 0).id(&fs_info)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let mut meta = Meta::new(Default::default());
+        let options = FileOptions::default();
         meta.stream_extension.general_secondary_flags.set_fat_chain();
         let directory = Directory {
-            entry: ClusterEntry { io, context, fat_info, fs_info, meta, sector_ref },
+            entry: ClusterEntry { io, context, fat_info, fs_info, meta, options, sector_ref },
             upcase_table: Rc::new((*array).into()),
         };
         Ok(Self { directory, upcase_table, volumn_label })

@@ -1,5 +1,7 @@
 use core::mem::MaybeUninit;
 
+use crate::file::MAX_FILENAME_SIZE;
+
 pub(crate) struct UpcaseTable(pub [u16; 128]);
 
 impl UpcaseTable {
@@ -10,7 +12,7 @@ impl UpcaseTable {
         }
     }
 
-    pub fn to_upper(&self, name: &str) -> heapless::String<510> {
+    pub fn to_upper(&self, name: &str) -> heapless::String<{ MAX_FILENAME_SIZE }> {
         let mut upcase = heapless::String::new();
         for ch in name.chars() {
             let ch = unsafe { char::from_u32_unchecked(self.lookup(ch as u16) as u32) };

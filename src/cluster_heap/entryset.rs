@@ -1,5 +1,6 @@
 use core::mem::MaybeUninit;
 
+use crate::file::MAX_FILENAME_SIZE;
 use crate::fs::{self, SectorRef};
 use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
@@ -25,7 +26,7 @@ impl EntryRef {
 
 #[derive(Clone)]
 pub struct EntrySet {
-    pub(crate) name_bytes: [u8; 510],
+    pub(crate) name_bytes: [u8; MAX_FILENAME_SIZE],
     pub(crate) name_length: u8,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
@@ -34,7 +35,7 @@ pub struct EntrySet {
 
 impl Default for EntrySet {
     fn default() -> Self {
-        let bytes: MaybeUninit<[u8; 510]> = MaybeUninit::uninit();
+        let bytes: MaybeUninit<[u8; MAX_FILENAME_SIZE]> = MaybeUninit::uninit();
         Self {
             name_bytes: unsafe { bytes.assume_init() },
             name_length: 0,

@@ -4,6 +4,8 @@ use exfat::error::{Error, OperationError};
 use exfat::Directory;
 use exfat::FileOrDirectory;
 
+const NOT_FOUND: Error<io::Error> = Error::Operation(OperationError::NotFound);
+
 pub fn open<IO>(
     mut dir: Directory<io::Error, IO>,
     path: &str,
@@ -17,11 +19,14 @@ where
     }
     if let Some((parent, _)) = path.rsplit_once('/') {
         for name in parent.split('/') {
-            dir = match dir.open(name)? {
+            let entryset = dir.find(name)?.ok_or(NOT_FOUND)?;
+            dir = match dir.open(&entryset)? {
                 FileOrDirectory::Directory(dir) => dir,
-                FileOrDirectory::File(_) => return Err(OperationError::NotFound.into()),
+                FileOrDirectory::File(_) => return Err(NOT_FOUND),
             }
         }
     }
-    dir.open(path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path))
+    let name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
+    let entryset = dir.find(name)?.ok_or(NOT_FOUND)?;
+    dir.open(&entryset)
 }

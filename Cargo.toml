@@ -28,6 +28,8 @@ async = ["fast-async-mutex"]
 std = ["async-std"]
 default = ["std"]
 log-max-level-off = ["log/max_level_off", "log/release_max_level_off"]
+limit-filename-size = []
+max-filename-size-64 = ["limit-filename-size"]
 
 [lib]
 name = "exfat"
