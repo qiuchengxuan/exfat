@@ -6,6 +6,12 @@
 //! 256B for upcase table and 12B plus name size for each file or directory,
 //! and 12B for root directory.
 //!
+//! For async scenario, enable `async-std` feature if std library available
+//! otherwide enable `async` feature
+//!
+//! For `no_std` scenario, be aware that thread safety is provided by spin crate,
+//! which potenitally leads to dead lock.
+//!
 //! ## Using this crate
 //!
 //! ```rust

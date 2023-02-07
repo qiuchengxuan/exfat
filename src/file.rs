@@ -17,8 +17,8 @@ impl Default for TouchOptions {
 
 #[derive(Copy, Clone, Default, Debug)]
 pub struct FileOptions {
-    /// Fragment will produce unperdictable latency when writing,
+    /// Fragment will produce unpredictable latency when writing,
     /// enabling this option will indicate write operation
-    /// returns DontFragment error instead of filling FAT chain
+    /// returns Fragment error instead of filling FAT chain
     pub dont_fragment: bool,
 }

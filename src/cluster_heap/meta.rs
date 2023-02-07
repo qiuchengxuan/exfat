@@ -19,10 +19,12 @@ use crate::types::ClusterID;
 macro_rules! with_context {
     ($context: expr) => {
         match () {
-            #[cfg(feature = "async")]
+            #[cfg(all(feature = "async", feature = "std"))]
             _ => $context.lock().await,
-            #[cfg(not(feature = "async"))]
+            #[cfg(all(not(feature = "async"), feature = "std"))]
             _ => $context.lock().unwrap(),
+            #[cfg(not(feature = "std"))]
+            _ => $context.lock(),
         }
     };
 }

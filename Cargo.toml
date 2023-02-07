@@ -1,6 +1,6 @@
 [package]
 name = "embedded-exfat"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["qiuchengxuan <qiuchengxuan@gmail.com>"]
 repository = "https://github.com/qiuchengxuan/exfat"
@@ -16,16 +16,16 @@ bitfield = "0.13"
 chrono = { version = "0.4", optional = true, default-features = false }
 deasync = "0.1"
 derive_more = "0.99"
-fast-async-mutex = { version = "0.6", optional = true }
 heapless = "0.7"
 hex-literal = "0.3"
 log = "0.4"
 memoffset = "0.8"
-spin-sync = "0.3"
+spin = "0.9"
 
 [features]
-async = ["fast-async-mutex"]
-std = ["async-std"]
+async = []
+async-std = ["async", "dep:async-std"]
+std = []
 default = ["std"]
 extern-datetime-now = []
 log-max-level-off = ["log/max_level_off", "log/release_max_level_off"]
