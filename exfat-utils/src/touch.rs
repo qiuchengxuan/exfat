@@ -1,14 +1,13 @@
-use std::io;
-
 use exfat::error::Error;
-use exfat::io::std::FileIO;
-use exfat::{FileOrDirectory, RootDirectory};
+use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use super::filepath::open;
 
-type RootDir = RootDirectory<io::Error, FileIO>;
-
-pub fn touch(root: &mut RootDir, path: &str) -> Result<(), Error<io::Error>> {
+pub fn touch<E, IO>(root: &mut Root<E, IO>, path: &str) -> Result<(), Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
     let now = chrono::Utc::now();
     let directory = root.open()?;
     match open(directory, &path)? {

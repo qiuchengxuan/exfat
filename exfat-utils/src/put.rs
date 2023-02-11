@@ -1,16 +1,16 @@
 use std::fs::File;
-use std::io;
 use std::io::Read;
 
 use exfat::error::{Error, OperationError};
-use exfat::io::std::FileIO;
-use exfat::{FileOrDirectory, RootDirectory};
+use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use crate::filepath::open;
 
-type RootDir = RootDirectory<io::Error, FileIO>;
-
-pub fn put(root: &mut RootDir, mut path: &str, source: &str) -> Result<(), Error<io::Error>> {
+pub fn put<E, IO>(root: &mut Root<E, IO>, mut path: &str, source: &str) -> Result<(), Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
     path = path.trim_end_matches('/');
     let (mut directory, name) = match path.rsplit_once('/') {
         Some((base, name)) => match open(root.open()?, &base)? {

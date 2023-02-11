@@ -1,30 +1,28 @@
-use std::io;
-
 use exfat::error::{Error, OperationError};
-use exfat::io::std::FileIO;
-use exfat::Directory;
-use exfat::FileOrDirectory;
+use exfat::Directory as Dir;
+use exfat::FileOrDirectory as FileOrDir;
 
-const NOT_FOUND: Error<io::Error> = Error::Operation(OperationError::NotFound);
+const NOT_FOUND: OperationError = OperationError::NotFound;
 
-type Dir = Directory<io::Error, FileIO>;
-type FileOrDir = FileOrDirectory<io::Error, FileIO>;
-
-pub fn open(mut dir: Dir, path: &str) -> Result<FileOrDir, Error<io::Error>> {
+pub fn open<E, IO>(mut dir: Dir<E, IO>, path: &str) -> Result<FileOrDir<E, IO>, Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
     let path = path.trim().trim_matches('/');
     if path == "" {
-        return Ok(FileOrDirectory::Directory(dir));
+        return Ok(FileOrDir::Directory(dir));
     }
     if let Some((parent, _)) = path.rsplit_once('/') {
         for name in parent.split('/') {
-            let entryset = dir.find(name)?.ok_or(NOT_FOUND)?;
+            let entryset = dir.find(name)?.ok_or(Error::Operation(NOT_FOUND))?;
             dir = match dir.open(&entryset)? {
-                FileOrDirectory::Directory(dir) => dir,
-                FileOrDirectory::File(_) => return Err(NOT_FOUND),
+                FileOrDir::Directory(dir) => dir,
+                FileOrDir::File(_) => return Err(Error::Operation(NOT_FOUND)),
             }
         }
     }
     let name = path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path);
-    let entryset = dir.find(name)?.ok_or(NOT_FOUND)?;
+    let entryset = dir.find(name)?.ok_or(Error::Operation(NOT_FOUND))?;
     dir.open(&entryset)
 }

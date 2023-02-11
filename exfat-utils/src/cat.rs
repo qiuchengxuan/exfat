@@ -2,14 +2,15 @@ use std::io;
 use std::io::Write;
 
 use exfat::error::{Error, OperationError};
-use exfat::io::std::FileIO;
-use exfat::{FileOrDirectory, RootDirectory};
+use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use crate::filepath::open;
 
-type RootDir = RootDirectory<io::Error, FileIO>;
-
-pub fn cat(root: &mut RootDir, path: &str) -> Result<(), Error<io::Error>> {
+pub fn cat<E, IO>(root: &mut Root<E, IO>, path: &str) -> Result<(), Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
     let mut file = match open(root.open()?, &path)? {
         FileOrDirectory::File(f) => f,
         FileOrDirectory::Directory(_) => return Err(OperationError::NotFile.into()),

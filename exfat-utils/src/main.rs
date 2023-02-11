@@ -7,7 +7,10 @@ mod remove;
 mod touch;
 mod truncate;
 
+use std::fmt::Debug;
+
 use clap::Parser;
+use exfat::error::Error;
 use exfat::io::std::FileIO;
 use exfat::{DateTime, ExFAT};
 
@@ -98,6 +101,27 @@ fn exfat_datetime_now() -> DateTime {
     now.into()
 }
 
+fn action<E, IO>(io: IO, action: Action) -> Result<(), Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
+    let mut exfat = ExFAT::new(io).unwrap();
+    exfat.validate_checksum().unwrap();
+    let mut root = exfat.root_directory().unwrap();
+    root.validate_upcase_table_checksum().unwrap();
+
+    match action {
+        Action::List(args) => list::list(&mut root, &args.path),
+        Action::Cat(args) => cat::cat(&mut root, &args.path),
+        Action::Touch(args) => touch::touch(&mut root, &args.path),
+        Action::Append(args) => append::append(&mut root, &args.path, &args.source),
+        Action::Truncate(args) => truncate::truncate(&mut root, &args.path, args.size),
+        Action::Put(args) => put::put(&mut root, &args.path, &args.source),
+        Action::Remove(args) => remove::remove(&mut root, &args.path),
+    }
+}
+
 fn main() {
     let args = Args::parse();
     let level = match (args.quiet, args.verbosity) {
@@ -110,21 +134,7 @@ fn main() {
     env_logger::builder().filter(None, level).target(env_logger::Target::Stdout).init();
 
     let io = FileIO::open(&args.device).unwrap();
-    let mut exfat = ExFAT::new(io).unwrap();
-    exfat.validate_checksum().unwrap();
-    let mut root = exfat.root_directory().unwrap();
-    root.validate_upcase_table_checksum().unwrap();
-
-    let result = match args.action {
-        Action::List(args) => list::list(&mut root, &args.path),
-        Action::Cat(args) => cat::cat(&mut root, &args.path),
-        Action::Touch(args) => touch::touch(&mut root, &args.path),
-        Action::Append(args) => append::append(&mut root, &args.path, &args.source),
-        Action::Truncate(args) => truncate::truncate(&mut root, &args.path, args.size),
-        Action::Put(args) => put::put(&mut root, &args.path, &args.source),
-        Action::Remove(args) => remove::remove(&mut root, &args.path),
-    };
-    if let Some(error) = result.err() {
+    if let Some(error) = action(io, args.action).err() {
         eprintln!("{:?}", error);
         std::process::exit(1);
     }

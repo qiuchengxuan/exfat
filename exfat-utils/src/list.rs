@@ -1,14 +1,13 @@
-use std::io;
-
 use exfat::error::{Error, OperationError};
-use exfat::io::std::FileIO;
-use exfat::{FileOrDirectory, RootDirectory};
+use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use super::filepath::open;
 
-type RootDir = RootDirectory<io::Error, FileIO>;
-
-pub fn list(root: &mut RootDir, path: &str) -> Result<(), Error<io::Error>> {
+pub fn list<E, IO>(root: &mut Root<E, IO>, path: &str) -> Result<(), Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
     let mut directory = match open(root.open()?, &path)? {
         FileOrDirectory::File(_) => return Err(OperationError::NotDirectory.into()),
         FileOrDirectory::Directory(dir) => dir,

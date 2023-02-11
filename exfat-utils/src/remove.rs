@@ -1,16 +1,13 @@
-use std::io;
-
 use exfat::error::{Error, OperationError};
-use exfat::io::std::FileIO;
-use exfat::{FileOrDirectory, RootDirectory};
+use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use crate::filepath::open;
 
-const NOT_FOUND: Error<io::Error> = Error::Operation(OperationError::NotFound);
-
-type RootDir = RootDirectory<io::Error, FileIO>;
-
-pub fn remove(root: &mut RootDir, mut path: &str) -> Result<(), Error<io::Error>> {
+pub fn remove<E, IO>(root: &mut Root<E, IO>, mut path: &str) -> Result<(), Error<E>>
+where
+    E: std::fmt::Debug,
+    IO: exfat::io::IO<Error = E>,
+{
     path = path.trim_end_matches('/');
     let (mut directory, name) = match path.rsplit_once('/') {
         Some((base, name)) => match open(root.open()?, &base)? {
@@ -19,6 +16,6 @@ pub fn remove(root: &mut RootDir, mut path: &str) -> Result<(), Error<io::Error>
         },
         None => (root.open()?, path),
     };
-    let entryset = directory.find(name)?.ok_or(NOT_FOUND)?;
+    let entryset = directory.find(name)?.ok_or(Error::Operation(OperationError::NotFound))?;
     directory.delete(&entryset)
 }

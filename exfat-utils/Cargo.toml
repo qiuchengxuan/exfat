@@ -6,9 +6,11 @@ edition = "2021"
 repository = "https://github.com/qiuchengxuan/exfat"
 
 [dependencies]
+async-embedded-sdmmc = "0.1"
 chrono = "0.4"
 clap = { version = "3", features = ["derive"] }
 embedded-exfat = { path = "..", features = ["chrono", "extern-datetime-now"] }
+embedded-hal = "0.2"
 env_logger = "0.10"
 log = "0.4"
 pretty-hex = "0.2"

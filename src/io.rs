@@ -18,7 +18,7 @@ pub(crate) fn flatten(sector: &[Sector]) -> &[u8] {
 pub trait IO: Clone {
     type Error: core::fmt::Debug;
     /// Default to 512
-    fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error>;
+    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error>;
     async fn read<'a>(&'a mut self, id: SectorID) -> Result<&'a [Sector], Self::Error>;
     /// Caller guarantees bytes.len() <= SECTOR_SIZE - offset
     async fn write(&mut self, id: SectorID, offset: usize, data: &[u8]) -> Result<(), Self::Error>;
@@ -80,7 +80,7 @@ pub mod std {
     #[derive(Debug)]
     pub struct FileIO {
         file: Arc<Mutex<File>>,
-        sector_size: usize,
+        sector_size_shift: u8,
         buffer: MaybeUninit<[u8; MAX_SECTOR_SIZE]>,
     }
 
@@ -88,7 +88,7 @@ pub mod std {
         fn clone(&self) -> Self {
             Self {
                 file: self.file.clone(),
-                sector_size: self.sector_size,
+                sector_size_shift: self.sector_size_shift,
                 buffer: MaybeUninit::uninit(),
             }
         }
@@ -106,7 +106,7 @@ pub mod std {
             let result = options.read(true).write(true).open(filepath).await;
             result.map(|file| Self {
                 file: Arc::new(Mutex::new(file)),
-                sector_size: 512,
+                sector_size_shift: 9, // 1 << 9 = 512
                 buffer: MaybeUninit::uninit(),
             })
         }
@@ -117,13 +117,14 @@ pub mod std {
     impl super::IO for FileIO {
         type Error = std::io::Error;
 
-        fn set_sector_size(&mut self, size: usize) -> Result<(), Self::Error> {
-            self.sector_size = size;
+        fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
+            self.sector_size_shift = shift;
             Ok(())
         }
 
         async fn read<'a>(&'a mut self, sector: SectorID) -> Result<&'a [[u8; 512]], Self::Error> {
-            let seek = SeekFrom::Start(u64::from(sector) * self.sector_size as u64);
+            let sector_size: usize = 1 << self.sector_size_shift;
+            let seek = SeekFrom::Start(u64::from(sector) * sector_size as u64);
 
             let mut file = match () {
                 #[cfg(not(feature = "async"))]
@@ -133,9 +134,9 @@ pub mod std {
             };
             file.seek(seek).await?;
             let buffer = unsafe { self.buffer.assume_init_mut() };
-            file.read_exact(&mut buffer[..self.sector_size]).await?;
+            file.read_exact(&mut buffer[..sector_size]).await?;
 
-            Ok(unsafe { from_raw_parts(buffer.as_ptr() as *const _, self.sector_size / 512) })
+            Ok(unsafe { from_raw_parts(buffer.as_ptr() as *const _, sector_size / 512) })
         }
 
         async fn write(
@@ -150,7 +151,8 @@ pub mod std {
                 #[cfg(feature = "async")]
                 () => self.file.lock().await,
             };
-            let seek = SeekFrom::Start(u64::from(sector) * self.sector_size as u64 + offset as u64);
+            let sector_size = 1 << self.sector_size_shift;
+            let seek = SeekFrom::Start(u64::from(sector) * sector_size + offset as u64);
             file.seek(seek).await?;
             file.write_all(buf).await.map(|_| ())
         }
