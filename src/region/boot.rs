@@ -46,11 +46,6 @@ impl BootSector {
     pub fn volume_flags(&self) -> VolumeFlags {
         VolumeFlags(self.volume_flags.to_ne())
     }
-
-    /// 512 ~ 4096
-    pub fn bytes_per_sector(&self) -> u32 {
-        2u32.pow(self.bytes_per_sector_shift as u32)
-    }
 }
 
 #[derive(Default, Debug)]

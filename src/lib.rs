@@ -74,10 +74,11 @@ pub use cluster_heap::root::RootDirectory;
 use error::{DataError, Error, ImplementationError};
 use io::IOWrapper;
 pub use region::data::entryset::primary::DateTime;
+use sync::{shared, Shared};
 use types::ClusterID;
 
 pub struct ExFAT<IO> {
-    io: IOWrapper<IO>,
+    io: Shared<IOWrapper<IO>>,
     serial_number: u32,
     fat_info: fat::Info,
     fs_info: fs::Info,
@@ -95,12 +96,11 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         if boot_sector.number_of_fats > 1 {
             return Err(ImplementationError::TexFATNotSupported.into());
         }
-        let sector_size = boot_sector.bytes_per_sector() as usize;
         let fat_offset = boot_sector.fat_offset.to_ne();
         let fat_length = boot_sector.fat_length.to_ne();
         debug!("FAT offset {} length {}", fat_offset, fat_length);
 
-        io.set_sector_size(sector_size).map_err(|e| Error::IO(e))?;
+        io.set_sector_size_shift(boot_sector.bytes_per_sector_shift).map_err(|e| Error::IO(e))?;
         let root = ClusterID::from(boot_sector.first_cluster_of_root_directory.to_ne());
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let fat_info = fat::Info::new(sector_size_shift, fat_offset, fat_length);
@@ -111,7 +111,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         };
         debug!("Root directory on cluster {}", root);
         Ok(Self {
-            io: IOWrapper::new(io),
+            io: shared(IOWrapper::new(io)),
             serial_number: boot_sector.volumn_serial_number.to_ne(),
             fs_info,
             fat_info,
@@ -120,37 +120,41 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
     }
 
     pub async fn is_dirty(&mut self) -> Result<bool, Error<E>> {
-        let blocks = self.io.read(0.into()).await?;
+        let mut io = sync::acquire!(self.io);
+        let blocks = io.read(0.into()).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         Ok(boot_sector.volume_flags().volume_dirty() > 0)
     }
 
     pub async fn percent_inuse(&mut self) -> Result<u8, Error<E>> {
-        let blocks = self.io.read(0.into()).await?;
+        let mut io = acquire!(self.io);
+        let blocks = io.read(0.into()).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         Ok(boot_sector.percent_inuse)
     }
 
     pub async fn set_dirty(&mut self, dirty: bool) -> Result<(), Error<E>> {
-        let sector = self.io.read(0.into()).await?;
+        let mut io = acquire!(self.io);
+        let sector = io.read(0.into()).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&sector[0]) };
         let mut volume_flags = boot_sector.volume_flags();
         volume_flags.set_volume_dirty(dirty as u16);
         let offset = offset_of!(region::boot::BootSector, volume_flags);
         let bytes: [u8; 2] = unsafe { mem::transmute(volume_flags) };
-        self.io.write(0.into(), offset, &bytes).await?;
-        self.io.flush().await
+        io.write(0.into(), offset, &bytes).await?;
+        io.flush().await
     }
 
     pub async fn validate_checksum(&mut self) -> Result<(), Error<E>> {
+        let mut io = acquire!(self.io);
         let mut checksum = region::boot::BootChecksum::default();
         for i in 0..=10 {
-            let sector = self.io.read(i.into()).await?;
+            let sector = io.read(i.into()).await?;
             for block in sector.iter() {
                 checksum.write(i as usize, block);
             }
         }
-        let sector = self.io.read(11.into()).await?;
+        let sector = io.read(11.into()).await?;
         let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[0]) };
         if u32::from_le(array[0]) != checksum.sum() {
             return Err(DataError::BootChecksum.into());

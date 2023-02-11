@@ -5,6 +5,7 @@ use crate::error::{Error, InputError, OperationError};
 use crate::file::{FileOptions, TouchOptions};
 use crate::fs::SectorRef;
 use crate::region::data::entryset::primary::DateTime;
+use crate::sync::acquire;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SeekFrom {
@@ -41,7 +42,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     /// Change file timestamp, will not take effect immediately untill flush or sync_all called
     pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
         self.meta.touch(datetime, opts).await?;
-        self.meta.io.flush().await
+        acquire!(self.meta.io).flush().await
     }
 
     /// Read some bytes
@@ -59,10 +60,12 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         let offset = self.cursor as usize % sector_size;
         let sector_id = self.sector_ref.id(&self.meta.fs_info);
         let sector_remain = sector_size - offset;
-        let sector = self.meta.io.read(sector_id).await?;
+        let mut io = acquire!(self.meta.io);
+        let sector = io.read(sector_id).await?;
         let bytes = crate::io::flatten(sector);
         if buf.len() <= sector_remain {
             buf.copy_from_slice(&bytes[offset..offset + buf.len()]);
+            drop(io);
             if buf.len() == sector_remain {
                 self.sector_ref = self.meta.next(self.sector_ref).await?;
             }
@@ -70,16 +73,20 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
             return Ok(buf.len());
         }
         buf[..sector_remain].copy_from_slice(&bytes[offset..]);
+        drop(io);
         let mut remain = &mut buf[sector_remain..];
         self.sector_ref = self.meta.next(self.sector_ref).await?;
         for _ in 0..remain.len() / sector_size {
-            let sector = self.meta.io.read(sector_id).await?;
+            let mut io = acquire!(self.meta.io);
+            let sector = io.read(sector_id).await?;
             let bytes = crate::io::flatten(sector);
             remain[..sector_size].copy_from_slice(bytes);
+            drop(io);
             self.sector_ref = self.meta.next(self.sector_ref).await?;
             remain = &mut remain[sector_size..];
         }
-        let sector = self.meta.io.read(sector_id).await?;
+        let mut io = acquire!(self.meta.io);
+        let sector = io.read(sector_id).await?;
         let bytes = crate::io::flatten(sector);
         remain.copy_from_slice(&bytes[..remain.len()]);
         self.cursor += buf.len() as u64;
@@ -106,7 +113,9 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
             let chunk = &bytes[..length];
             trace!("Write to sector-ref {}", self.sector_ref);
             let sector_id = self.sector_ref.id(&self.meta.fs_info);
-            self.meta.io.write(sector_id, self.cursor as usize % sector_size, chunk).await?;
+            let mut io = acquire!(self.meta.io);
+            io.write(sector_id, self.cursor as usize % sector_size, chunk).await?;
+            drop(io);
             self.cursor += length as u64;
             self.size = core::cmp::max(self.cursor, self.size);
             if length == sector_remain && self.cursor < capacity {
@@ -123,7 +132,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         let sector_id = self.sector_ref.id(&self.meta.fs_info);
         let length = core::cmp::min(bytes.len(), sector_size);
         let chunk = &bytes[..length];
-        self.meta.io.write(sector_id, 0, chunk).await?;
+        acquire!(self.meta.io).write(sector_id, 0, chunk).await?;
         self.cursor += length as u64;
         self.size = core::cmp::max(self.cursor, self.size);
         if length == sector_size && self.cursor < capacity {
@@ -144,7 +153,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     /// Flush data write operations
     pub async fn sync_data(&mut self) -> Result<(), Error<E>> {
         if self.dirty {
-            self.meta.io.flush().await?;
+            acquire!(self.meta.io).flush().await?;
             self.dirty = false;
         }
         Ok(())

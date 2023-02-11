@@ -8,7 +8,7 @@ use alloc::rc::Rc;
 
 use super::entryset::{EntryRef, EntrySet};
 use super::file::File;
-use super::meta::{with_context, MetaFileDirectory};
+use super::meta::MetaFileDirectory;
 use super::metadata::Metadata;
 use crate::error::{DataError, Error, ImplementationError, InputError, OperationError};
 use crate::file::{FileOptions, TouchOptions, MAX_FILENAME_SIZE};
@@ -17,6 +17,7 @@ use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{name_hash, DateTime, FileDirectory};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
 use crate::region::data::entryset::{checksum, RawEntry, ENTRY_SIZE};
+use crate::sync::acquire;
 use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
 use entry_iter::EntryIter;
@@ -155,13 +156,13 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
     /// Change current directory timestamp
     pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
         self.meta.touch(datetime, opts).await?;
-        self.meta.io.flush().await
+        acquire!(self.meta.io).flush().await
     }
 
     /// Open a file or directory
     pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDirectory<E, IO>, Error<E>> {
         trace!("Open {} on entry-ref {}", entryset.name(), entryset.entry_ref);
-        let mut context = with_context!(self.meta.context);
+        let mut context = acquire!(self.meta.context);
         if !context.opened_entries.add(entryset.id(&self.meta.fs_info)) {
             return Err(OperationError::AlreadyOpen.into());
         }
@@ -197,7 +198,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         let mut skip = 0;
 
         loop {
-            let sector = self.meta.io.read(sector_ref.id(&self.meta.fs_info)).await?;
+            let mut io = acquire!(self.meta.io);
+            let sector = io.read(sector_ref.id(&self.meta.fs_info)).await?;
             let entries: &[[RawEntry; 16]] = unsafe { mem::transmute(sector) };
             for (i, entry) in entries.iter().map(|e| e.iter()).flatten().enumerate() {
                 if skip > 0 {
@@ -233,6 +235,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                     Err(_) => return Err(DataError::Metadata.into()),
                 }
             }
+            drop(io);
             sector_ref = self.meta.next(sector_ref).await?;
         }
     }
@@ -280,9 +283,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         let sector_id = write_entry_ref.sector_ref.id(&self.meta.fs_info);
         let offset = write_entry_ref.index as usize * ENTRY_SIZE;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&file_directory) };
-        self.meta.io.write(sector_id, offset, bytes).await?;
+        let mut io = acquire!(self.meta.io);
+        io.write(sector_id, offset, bytes).await?;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&stream_extension) };
-        self.meta.io.write(sector_id, offset + ENTRY_SIZE, bytes).await?;
+        io.write(sector_id, offset + ENTRY_SIZE, bytes).await?;
 
         let mut chars = name.chars();
         let mut filename = Filename::default();
@@ -292,21 +296,21 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 buf[i] = u16::to_le(chars.next().unwrap_or('\0') as u16)
             }
             let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&filename) };
-            self.meta.io.write(sector_id, offset + index * ENTRY_SIZE, bytes).await?;
+            io.write(sector_id, offset + index * ENTRY_SIZE, bytes).await?;
         }
         if tail {
             let offset = offset + (num_entries as usize + 2) * ENTRY_SIZE;
-            self.meta.io.write(sector_id, offset, &[0]).await?;
+            io.write(sector_id, offset, &[0]).await?;
         };
         // Fill free entries afterwards to avoid corrupting metadata
         if out_of_capacity {
             let sector_id = sector_ref.id(&self.meta.fs_info);
             let byte: u8 = RawEntryType::new(EntryType::Filename, false).into();
             for i in free_entry_ref.index as usize..(sector_size / ENTRY_SIZE) {
-                self.meta.io.write(sector_id, i * ENTRY_SIZE, &[byte]).await?;
+                io.write(sector_id, i * ENTRY_SIZE, &[byte]).await?;
             }
         }
-        self.meta.io.flush().await
+        io.flush().await
     }
 
     /// Delete a file or directory
@@ -336,7 +340,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         };
 
         let mut offset = meta.entry_ref.index as usize * ENTRY_SIZE;
-        let io = &mut self.meta.io;
+        let mut io = acquire!(self.meta.io);
         io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
         offset = (offset + ENTRY_SIZE) % sector_size;
         if offset == 0 {
@@ -350,15 +354,16 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             }
             io.write(sector_id, offset, &[EntryType::Filename.into(); 1]).await?;
         }
+        drop(io);
 
         let stream_extension = &meta.stream_extension;
         let cluster_id: ClusterID = stream_extension.first_cluster.to_ne().into();
         let fat_chain = meta.stream_extension.general_secondary_flags.fat_chain();
         if cluster_id.valid() {
-            let mut context = with_context!(self.meta.context);
+            let mut context = acquire!(self.meta.context);
             context.allocation_bitmap.release(cluster_id, fat_chain).await?;
         }
-        io.flush().await
+        acquire!(self.meta.io).flush().await
     }
 
     #[cfg(all(feature = "async", not(feature = "std")))]

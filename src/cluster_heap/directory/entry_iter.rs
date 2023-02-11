@@ -6,6 +6,7 @@ use crate::error::Error;
 use crate::fs::SectorRef;
 use crate::region::data::entry_type::RawEntryType;
 use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
+use crate::sync::acquire;
 
 pub(crate) struct EntryIter<'a, IO> {
     meta: &'a mut MetaFileDirectory<IO>,
@@ -20,8 +21,10 @@ impl<'a, E: Debug, IO: crate::io::IO<Error = E>> EntryIter<'a, IO> {
         meta: &'a mut MetaFileDirectory<IO>,
     ) -> Result<EntryIter<'a, IO>, Error<E>> {
         let sector_ref = meta.sector_ref;
-        let sector = meta.io.read(sector_ref.id(&meta.fs_info)).await?;
+        let mut io = acquire!(meta.io);
+        let sector = io.read(sector_ref.id(&meta.fs_info)).await?;
         let entries = unsafe { mem::transmute(sector) };
+        drop(io);
         Ok(Self { meta, entries, sector_ref, index: u8::MAX })
     }
 
@@ -31,7 +34,8 @@ impl<'a, E: Debug, IO: crate::io::IO<Error = E>> EntryIter<'a, IO> {
         if (self.index as usize * ENTRY_SIZE) >= sector_size {
             self.index -= (sector_size / ENTRY_SIZE) as u8;
             self.sector_ref = self.meta.next(self.sector_ref).await?;
-            let sector = self.meta.io.read(self.sector_ref.id(&self.meta.fs_info)).await?;
+            let mut io = acquire!(self.meta.io);
+            let sector = io.read(self.sector_ref.id(&self.meta.fs_info)).await?;
             self.entries = unsafe { mem::transmute(sector) };
         }
         Ok(())

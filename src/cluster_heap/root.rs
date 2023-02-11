@@ -2,7 +2,6 @@ use core::fmt::Debug;
 use core::mem;
 
 use alloc::rc::Rc;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::directory::Directory;
@@ -10,7 +9,7 @@ use super::metadata::Metadata;
 use super::{
     allocation_bitmap::AllocationBitmap,
     context::{Context, OpenedEntries},
-    meta::{with_context, MetaFileDirectory},
+    meta::MetaFileDirectory,
 };
 use crate::endian::Little as LE;
 use crate::error::{DataError, Error, OperationError};
@@ -21,7 +20,7 @@ use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::RawEntry;
-use crate::sync::Mutex;
+use crate::sync::{acquire, shared, Shared};
 use crate::types::{ClusterID, SectorID};
 
 pub struct RootDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
@@ -33,7 +32,7 @@ pub struct RootDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
     pub(crate) async fn new(
-        mut io: IOWrapper<IO>,
+        io: Shared<IOWrapper<IO>>,
         fat_info: fat::Info,
         fs_info: fs::Info,
         cluster_id: ClusterID,
@@ -42,7 +41,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
         let sector_ref = SectorRef::new(cluster_id, 0);
-        let sector = io.read(sector_ref.id(&fs_info)).await?;
+        let mut borrow_io = acquire!(io);
+        let sector = borrow_io.read(sector_ref.id(&fs_info)).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
             match RawEntryType::from(entry[0]).entry_type() {
@@ -61,6 +61,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
                 _ => break,
             };
         }
+        drop(borrow_io);
 
         let upcase_table = upcase_table.ok_or(Error::Data(DataError::UpcaseTableMissing))?;
         let context = {
@@ -71,24 +72,26 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
             let base = SectorID::from((fs_info.heap_offset + sector_offset) as u64);
             let length = region.data_length.to_ne() as u32;
             debug!("Allocation bitmap found at cluster {} length {}", first_cluster, length);
-            let io = io.clone();
-            let bitmap = AllocationBitmap::new(io, base, fat_info, length).await?;
-            Arc::new(Mutex::new(Context {
+            let bitmap = AllocationBitmap::new(io.clone(), base, fat_info, length).await?;
+            shared(Context {
                 allocation_bitmap: bitmap,
                 opened_entries: OpenedEntries { entries: Vec::with_capacity(4) },
-            }))
+            })
         };
         let cluster_id = upcase_table.first_cluster.to_ne();
         let length = upcase_table.data_length.to_ne();
         debug!("Upcase table found at cluster {} length {}", cluster_id, length);
-        let sector = io.read(SectorRef::new(cluster_id.into(), 0).id(&fs_info)).await?;
+        let mut borrow_io = acquire!(io);
+        let sector = borrow_io.read(SectorRef::new(cluster_id.into(), 0).id(&fs_info)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let mut metadata = Metadata::new(Default::default());
         let options = FileOptions::default();
         metadata.stream_extension.general_secondary_flags.set_fat_chain();
+        let upcase_table_data = Rc::new((*array).into());
+        drop(borrow_io);
         let meta =
             MetaFileDirectory { io, context, fat_info, fs_info, metadata, options, sector_ref };
-        let directory = Directory { meta, upcase_table: Rc::new((*array).into()) };
+        let directory = Directory { meta, upcase_table: upcase_table_data };
         Ok(Self { directory, upcase_table, volumn_label })
     }
 
@@ -100,7 +103,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = fs_info.sector_size();
         let num_sectors = data_length / sector_size as u64;
-        let io = &mut self.directory.meta.io;
+        let mut io = acquire!(self.directory.meta.io);
         for i in 0..num_sectors {
             let sector = io.read(first_sector + i).await?;
             checksum.write(crate::io::flatten(sector));
@@ -123,12 +126,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
 
     pub async fn open(&mut self) -> Result<Directory<E, IO>, Error<E>> {
         let meta = self.directory.meta.clone();
-        let mut context = with_context!(self.directory.meta.context);
+        let mut context = acquire!(self.directory.meta.context);
         if !context.opened_entries.add(meta.id()) {
             return Err(OperationError::AlreadyOpen.into());
         }
         Ok(Directory { meta, upcase_table: self.directory.upcase_table.clone() })
     }
 }
-
-unsafe impl<E: Debug, IO: Send + crate::io::IO<Error = E>> Send for RootDirectory<E, IO> {}

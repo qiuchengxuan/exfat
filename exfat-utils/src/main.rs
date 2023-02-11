@@ -133,7 +133,13 @@ fn main() {
     log::set_max_level(level);
     env_logger::builder().filter(None, level).target(env_logger::Target::Stdout).init();
 
-    let io = FileIO::open(&args.device).unwrap();
+    let io = match FileIO::open(&args.device) {
+        Ok(io) => io,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
     if let Some(error) = action(io, args.action).err() {
         eprintln!("{:?}", error);
         std::process::exit(1);
