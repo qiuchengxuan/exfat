@@ -22,16 +22,19 @@ dependencies = [
 
 [[package]]
 name = "async-embedded-sdmmc"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db8a6f2e21aad5c36d8a4ed695205d43d93e1a76a8f55bdd286896d9f5bfc3ea"
+checksum = "e45f6c1ee5cc9428ce36f35302b9410a4b941321c099fe150dc5523322b342d8"
 dependencies = [
  "async-trait",
  "bitfield",
  "deasync",
  "embedded-hal",
+ "gpio",
  "log",
  "nb 1.0.0",
+ "spidev",
+ "void",
 ]
 
 [[package]]
@@ -258,18 +261,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-exfat"
+name = "displaydoc"
 version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bf95dc3f046b9da4f2d51833c0d3547d8564ef6910f5c1ed130306a75b92886"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "embedded-exfat"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "bitfield",
  "chrono",
  "deasync",
  "derive_more",
+ "displaydoc",
  "heapless",
  "hex-literal",
  "log",
- "memoffset",
+ "memoffset 0.8.0",
  "spin",
 ]
 
@@ -328,8 +343,16 @@ dependencies = [
  "embedded-hal",
  "env_logger",
  "log",
+ "mbr-nostd",
  "pretty-hex",
+ "spidev",
 ]
+
+[[package]]
+name = "gpio"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fe6783270536547ac473c9d2ae5a7e0e715ea43f29004ced47fbd1c1372d2c7"
 
 [[package]]
 name = "hash32"
@@ -498,10 +521,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "mbr-nostd"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e7b12e539fe14d6423dc8864bd5b5fc1f04fd14f5d9152a137de285e4329f7"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
+
+[[package]]
+name = "memoffset"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "memoffset"
@@ -526,6 +567,19 @@ name = "nb"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "546c37ac5d9e56f55e73b677106873d9d9f5190605e41a856503623648488cae"
+
+[[package]]
+name = "nix"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f3790c00a0150112de0f4cd161e3d7fc4b2d8a5542ffc35f099a2562aecb35c"
+dependencies = [
+ "bitflags",
+ "cc",
+ "cfg-if",
+ "libc",
+ "memoffset 0.6.5",
+]
 
 [[package]]
 name = "num-integer"
@@ -663,6 +717,17 @@ name = "semver"
 version = "1.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58bc9567378fc7690d6b2addae4e60ac2eeea07becb2c64b9f218b53865cba2a"
+
+[[package]]
+name = "spidev"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c43e891adf1abc1e09b10f80c8d91959ee20ec28425c6dadac78844ba4c709f"
+dependencies = [
+ "bitflags",
+ "libc",
+ "nix",
+]
 
 [[package]]
 name = "spin"

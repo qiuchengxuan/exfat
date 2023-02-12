@@ -56,12 +56,12 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let sector_size = 1 << self.sector_size_shift;
         let mut num_available = self.num_clusters - self.maybe_available_offset * 8;
         for i in 0..(self.length as usize / size_of::<usize>()) {
-            if i > 0 && i % (sector_size / size_of::<usize>()) == 0 {
+            let index = i % (sector_size / size_of::<usize>());
+            if i > 0 && index == 0 {
                 sector_id += 1u64;
                 sector = io.read(sector_id).await?;
                 array = unsafe { transmute(sector) };
             }
-            let index = i % sector_size;
             num_available -= array[index / ARRAY_SIZE][index % ARRAY_SIZE].count_ones();
         }
         self.num_available_clusters = num_available;

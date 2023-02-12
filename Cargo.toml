@@ -1,6 +1,6 @@
 [package]
 name = "embedded-exfat"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["qiuchengxuan <qiuchengxuan@gmail.com>"]
 repository = "https://github.com/qiuchengxuan/exfat"
@@ -16,6 +16,7 @@ bitfield = "0.13"
 chrono = { version = "0.4", optional = true, default-features = false }
 deasync = "0.1"
 derive_more = "0.99"
+displaydoc = "0.2"
 heapless = "0.7"
 hex-literal = "0.3"
 log = "0.4"

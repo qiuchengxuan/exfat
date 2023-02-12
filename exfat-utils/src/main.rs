@@ -1,9 +1,13 @@
+#[macro_use]
+extern crate log;
+
 mod append;
 mod cat;
 pub(crate) mod filepath;
 mod list;
 mod put;
 mod remove;
+mod sdmmc;
 mod touch;
 mod truncate;
 
@@ -88,9 +92,15 @@ struct Args {
     quiet: bool,
     #[clap(short, action = clap::ArgAction::Count)]
     verbosity: u8,
-    /// block device or file that formatted with exfat
+    /// Block device, SPI device or file
     #[clap(short, long)]
     device: String,
+    /// Specify chip-select GPIO pin
+    #[clap(long)]
+    cs: Option<u16>,
+    /// Specify partition index
+    #[clap(long)]
+    partition: Option<u8>,
     #[clap(subcommand)]
     action: Action,
 }
@@ -106,10 +116,10 @@ where
     E: std::fmt::Debug,
     IO: exfat::io::IO<Error = E>,
 {
-    let mut exfat = ExFAT::new(io).unwrap();
-    exfat.validate_checksum().unwrap();
-    let mut root = exfat.root_directory().unwrap();
-    root.validate_upcase_table_checksum().unwrap();
+    let mut exfat = ExFAT::new(io)?;
+    exfat.validate_checksum()?;
+    let mut root = exfat.root_directory()?;
+    root.validate_upcase_table_checksum()?;
 
     match action {
         Action::List(args) => list::list(&mut root, &args.path),
@@ -119,6 +129,30 @@ where
         Action::Truncate(args) => truncate::truncate(&mut root, &args.path, args.size),
         Action::Put(args) => put::put(&mut root, &args.path, &args.source),
         Action::Remove(args) => remove::remove(&mut root, &args.path),
+    }
+}
+
+fn display_error<E: std::fmt::Display>(error: E) -> () {
+    eprintln!("{}", error);
+    ()
+}
+
+fn debug_error<E: std::fmt::Debug>(error: E) -> () {
+    eprintln!("{:?}", error);
+    ()
+}
+
+fn run(args: Args) -> Result<(), ()> {
+    if args.device.starts_with("/dev/spidev") {
+        let cs = args.cs.ok_or("CS is required for SPI device").map_err(display_error)?;
+        let mut sdmmc = sdmmc::SDMMC::new(&args.device, cs).map_err(display_error)?;
+        if let Some(partition) = args.partition {
+            sdmmc.set_patition(partition as usize).map_err(display_error)?;
+        }
+        action(sdmmc, args.action).map_err(debug_error)
+    } else {
+        let file = FileIO::open(&args.device).map_err(display_error)?;
+        action(file, args.action).map_err(display_error)
     }
 }
 
@@ -132,16 +166,7 @@ fn main() {
     };
     log::set_max_level(level);
     env_logger::builder().filter(None, level).target(env_logger::Target::Stdout).init();
-
-    let io = match FileIO::open(&args.device) {
-        Ok(io) => io,
-        Err(e) => {
-            eprintln!("{}", e);
-            std::process::exit(1);
-        }
-    };
-    if let Some(error) = action(io, args.action).err() {
-        eprintln!("{:?}", error);
+    if run(args).is_err() {
         std::process::exit(1);
     }
 }

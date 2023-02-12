@@ -102,6 +102,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
 
         io.set_sector_size_shift(boot_sector.bytes_per_sector_shift).map_err(|e| Error::IO(e))?;
         let root = ClusterID::from(boot_sector.first_cluster_of_root_directory.to_ne());
+        debug!("Root directory on cluster {}", root);
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let fat_info = fat::Info::new(sector_size_shift, fat_offset, fat_length);
         let fs_info = fs::Info {
@@ -109,7 +110,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
             sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
             sector_size_shift,
         };
-        debug!("Root directory on cluster {}", root);
+        debug!("Filesystem info: {:?}", fs_info);
         Ok(Self {
             io: shared(IOWrapper::new(io)),
             serial_number: boot_sector.volumn_serial_number.to_ne(),
