@@ -16,7 +16,7 @@ bitfield = "0.13"
 chrono = { version = "0.4", optional = true, default-features = false }
 deasync = "0.1"
 derive_more = "0.99"
-displaydoc = "0.2"
+displaydoc = { version = "0.2", default-features = false }
 heapless = "0.7"
 hex-literal = "0.3"
 log = "0.4"
@@ -26,13 +26,14 @@ spin = "0.9"
 [features]
 async = []
 async-std = ["async", "dep:async-std"]
-std = []
+std = ["displaydoc/std", "chrono/std", "chrono/clock"]
 sync = []
-default = ["std"]
+default = ["std", "precise-allocation-counter"]
 extern-datetime-now = []
 log-max-level-off = ["log/max_level_off", "log/release_max_level_off"]
 limit-filename-size = []
 max-filename-size-30 = ["limit-filename-size"]
+precise-allocation-counter = []
 
 [lib]
 name = "exfat"

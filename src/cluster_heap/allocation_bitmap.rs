@@ -39,11 +39,11 @@ pub struct DumbAllocator<IO> {
     base: SectorID,
     fat_info: fat::Info,
     length: u32,
-    sector_size_shift: u8,
     num_clusters: u32,
+    sector_size_shift: u8,
     percent_inuse: u8,
     maybe_available_offset: u32,
-    num_available_clusters: u32,
+    num_inuse_clusters: u32,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
@@ -54,7 +54,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let mut sector = io.read(sector_id).await?;
         let mut array: &[[usize; ARRAY_SIZE]] = unsafe { transmute(sector) };
         let sector_size = 1 << self.sector_size_shift;
-        let mut num_available = self.num_clusters - self.maybe_available_offset * 8;
+        let mut num_inuse = 0;
         for i in 0..(self.length as usize / size_of::<usize>()) {
             let index = i % (sector_size / size_of::<usize>());
             if i > 0 && index == 0 {
@@ -62,10 +62,10 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
                 sector = io.read(sector_id).await?;
                 array = unsafe { transmute(sector) };
             }
-            num_available -= array[index / ARRAY_SIZE][index % ARRAY_SIZE].count_ones();
+            num_inuse += array[index / ARRAY_SIZE][index % ARRAY_SIZE].count_ones();
         }
-        self.num_available_clusters = num_available;
-        debug!("Num available clusters is {}/{}", num_available, self.num_clusters);
+        self.num_inuse_clusters = num_inuse;
+        debug!("Num inuse clusters is {}/{}", num_inuse, self.num_clusters);
         Ok(())
     }
 
@@ -82,24 +82,30 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let num_clusters = boot_sector.cluster_count.to_ne();
         let percent_inuse = boot_sector.percent_inuse;
         drop(borrow_io);
+
         let mut bitmap = Self {
             io,
             base,
             fat_info,
             length,
-            sector_size_shift,
             num_clusters,
+            sector_size_shift,
             percent_inuse,
             maybe_available_offset: 0,
-            num_available_clusters: 0,
+            num_inuse_clusters: ((percent_inuse + 1) as u64 * num_clusters as u64 / 100) as u32 - 1,
         };
-        bitmap.init().await?;
+        if cfg!(feature = "precise-allocation-counter") {
+            bitmap.init().await?;
+        }
         Ok(bitmap)
     }
 
     async fn is_available(&mut self, cluster_id: ClusterID) -> Result<Option<u8>, Error<E>> {
         let offset = u32::from(cluster_id) - 2;
         let (byte_offset, bit_offset) = (offset / 8, offset as u8 % 8);
+        if byte_offset >= self.length {
+            return Ok(None);
+        }
         let sector_size = 1 << self.sector_size_shift;
         let sector_id = self.base + offset / 8 / sector_size;
         let mut io = acquire!(self.io);
@@ -128,19 +134,23 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         Err(AllocationError::NoMoreCluster.into())
     }
 
+    fn ratio(numerator: u32, dominator: u32) -> u8 {
+        core::cmp::min((numerator as u64 * 100 / dominator as u64) as u8, 100)
+    }
+
     async fn ensure_percent_inuse(&mut self) -> Result<(), Error<E>> {
-        let percent_inuse = self.num_available_clusters / 1024 * 100 / self.num_clusters;
+        let offset = offset_of!(BootSector, percent_inuse);
+        let percent_inuse = Self::ratio(self.num_inuse_clusters, self.num_clusters);
         if percent_inuse as u8 == self.percent_inuse {
             return Ok(());
         }
         self.percent_inuse = percent_inuse as u8;
-        let offset = offset_of!(BootSector, percent_inuse);
         let bytes: [u8; 1] = [self.percent_inuse];
         acquire!(self.io).write(0.into(), offset, &bytes).await
     }
 
     pub async fn allocate(&mut self, last: ClusterID, frag: bool) -> Result<ClusterID, Error<E>> {
-        if self.num_available_clusters == 0 {
+        if self.maybe_available_offset >= self.length {
             return Err(AllocationError::NoMoreCluster.into());
         }
         let offset = u32::from(last + 1u32) - 2;
@@ -165,8 +175,13 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let offset = byte_offset % sector_size;
         bits |= 1 << bit_offset;
         acquire!(self.io).write(sector_id, offset as usize, &[bits; 1]).await?;
-        self.num_available_clusters -= 1;
+        self.num_inuse_clusters += 1;
         self.maybe_available_offset = byte_offset + (bits == 0xFF) as u32;
+        if !cfg!(feature = "precise-allocation-counter") {
+            if self.maybe_available_offset * 8 > self.num_inuse_clusters {
+                self.num_inuse_clusters = self.maybe_available_offset * 8;
+            }
+        }
         self.ensure_percent_inuse().await?;
         trace!("Allocated cluster {}", cluster_id);
         Ok(cluster_id)
@@ -205,7 +220,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let mut cluster_id = cluster_id;
         while cluster_id.valid() {
             self.release_one(cluster_id).await?;
-            self.num_available_clusters += 1;
+            self.num_inuse_clusters -= 1;
             let sector_id = match self.fat_info.fat_sector_id(cluster_id) {
                 Some(id) => id,
                 None => return Ok(()),

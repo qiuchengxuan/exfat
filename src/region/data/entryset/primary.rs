@@ -1,6 +1,8 @@
 use bitfield::bitfield;
+#[cfg(all(feature = "chrono", feature = "std"))]
+use chrono::Local;
 #[cfg(feature = "chrono")]
-use chrono::{Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use derive_more::Into;
 
 use super::super::entry_type::{EntryType, RawEntryType};
@@ -58,7 +60,7 @@ impl From<NaiveDateTime> for Timestamp {
     }
 }
 
-#[cfg(feature = "chrono")]
+#[cfg(all(feature = "chrono", feature = "std"))]
 impl Timestamp {
     fn chrono_with_millis(&self, millis: u32) -> Result<NaiveDateTime, ()> {
         let date = NaiveDate::from_ymd_opt(self.year() as i32, self.month(), self.day());
@@ -137,7 +139,7 @@ impl DateTime {
     }
 }
 
-#[cfg(feature = "chrono")]
+#[cfg(all(feature = "chrono", feature = "std"))]
 impl DateTime {
     pub fn localtime(&self) -> Result<chrono::DateTime<Local>, ()> {
         let naive = self.timestamp.chrono_with_millis(self.millisecond as u32)?;
