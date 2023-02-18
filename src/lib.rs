@@ -79,7 +79,7 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
     }
 
     pub async fn is_dirty(&mut self) -> Result<bool, Error<E>> {
-        let mut io = sync::acquire!(self.io);
+        let mut io = acquire!(self.io);
         let blocks = io.read(0.into()).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         Ok(boot_sector.volume_flags().volume_dirty() > 0)
@@ -129,6 +129,12 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         let io = self.io.clone();
         RootDirectory::new(io, self.fat_info, self.fs_info, self.root).await
     }
-}
 
-unsafe impl<IO: Send> Send for ExFAT<IO> {}
+    pub fn try_free(self) -> Result<IO, Self> {
+        let ExFAT { io, serial_number, fat_info, fs_info, root } = self;
+        match try_unwrap!(io) {
+            Ok(io) => Ok(io.unwrap()),
+            Err(io) => Err(Self { io, serial_number, fat_info, fs_info, root }),
+        }
+    }
+}
