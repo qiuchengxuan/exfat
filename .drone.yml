@@ -1,0 +1,24 @@
+kind: pipeline
+type: kubernetes
+name: default
+steps:
+  - name: cargo-check
+    image: rust:latest
+    commands:
+      - cargo check
+      - cargo check --features sync
+      - cargo check --features async-std,async
+      - cargo check --features async-std,async,sync
+      - cargo check --no-default-features
+      - cargo check --no-default-features --features async
+      - cargo check --no-default-features --features async,sync
+    environment:
+      CARGO_HOME: /cargo
+    volumes:
+      - name: cargo
+        path: /cargo
+volumes:
+  - name: cargo
+    claim:
+      name: drone-ci-cargo
+      read_only: false

@@ -27,12 +27,18 @@ pub trait IO {
 
 pub(crate) struct IOWrapper<IO>(IO);
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E, T: IO<Error = E>> IOWrapper<T> {
-    pub(crate) fn new(io: T) -> Self {
+impl<IO> IOWrapper<IO> {
+    pub(crate) fn new(io: IO) -> Self {
         Self(io)
     }
 
+    pub(crate) fn unwrap(self) -> IO {
+        self.0
+    }
+}
+
+#[cfg_attr(not(feature = "async"), deasync::deasync)]
+impl<E, T: IO<Error = E>> IOWrapper<T> {
     pub(crate) async fn read<'a>(&'a mut self, sector: SectorID) -> Result<&'a [Block], Error<E>> {
         self.0.read(sector).await.map_err(|e| Error::IO(e))
     }

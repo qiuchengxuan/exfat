@@ -36,4 +36,18 @@ macro_rules! acquire {
     };
 }
 
+#[macro_export]
+macro_rules! try_unwrap {
+    ($shared: expr) => {
+        match () {
+            #[cfg(all(feature = "sync", any(feature = "async-std", not(feature = "std"))))]
+            () => alloc::sync::Arc::try_unwrap($shared).map(|mutex| mutex.into_inner()),
+            #[cfg(all(feature = "sync", feature = "std", not(feature = "async-std")))]
+            () => alloc::sync::Arc::try_unwrap($shared).map(|mutex| mutex.into_inner().unwrap()),
+            #[cfg(not(feature = "sync"))]
+            () => alloc::rc::Rc::try_unwrap($shared).map(|cell| cell.into_inner()),
+        }
+    };
+}
+
 pub(crate) use acquire;

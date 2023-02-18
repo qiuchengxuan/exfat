@@ -25,7 +25,6 @@ spin = "0.9"
 
 [features]
 async = []
-async-std = ["async", "dep:async-std"]
 std = ["displaydoc/std", "chrono/std", "chrono/clock"]
 sync = []
 default = ["std", "precise-allocation-counter"]
