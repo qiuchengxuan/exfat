@@ -144,7 +144,7 @@ impl DateTime {
     pub fn localtime(&self) -> Result<chrono::DateTime<Local>, ()> {
         let naive = self.timestamp.chrono_with_millis(self.millisecond as u32)?;
         let offset: FixedOffset = self.utc_offset.try_into()?;
-        let datetime: chrono::DateTime<FixedOffset> = chrono::DateTime::from_utc(naive, offset);
+        let datetime: chrono::DateTime<FixedOffset> = chrono::DateTime::from_naive_utc_and_offset(naive, offset);
         Ok(datetime.with_timezone(&Local))
     }
 }
@@ -156,7 +156,7 @@ impl<TZ: chrono::Offset + chrono::TimeZone> From<chrono::DateTime<TZ>> for DateT
         let seconds = offset.local_minus_utc();
         let utc_offset = UTCOffset::new((seconds / 60) as i16);
         let naive = datetime.naive_utc();
-        let millisecond = naive.timestamp_subsec_millis() as u16;
+        let millisecond = naive.and_utc().timestamp_subsec_millis() as u16;
         Self { timestamp: naive.into(), millisecond, utc_offset }
     }
 }
