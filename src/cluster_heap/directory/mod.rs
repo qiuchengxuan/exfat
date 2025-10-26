@@ -11,12 +11,12 @@ use super::file::File;
 use super::meta::MetaFileDirectory;
 use super::metadata::Metadata;
 use crate::error::{DataError, Error, ImplementationError, InputError, OperationError};
-use crate::file::{FileOptions, TouchOptions, MAX_FILENAME_SIZE};
+use crate::file::{FileOptions, MAX_FILENAME_SIZE, TouchOptions};
 use crate::fs::SectorRef;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
-use crate::region::data::entryset::primary::{name_hash, DateTime, FileDirectory};
+use crate::region::data::entryset::primary::{DateTime, FileDirectory, name_hash};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
-use crate::region::data::entryset::{checksum, RawEntry, ENTRY_SIZE};
+use crate::region::data::entryset::{ENTRY_SIZE, RawEntry, checksum};
 use crate::sync::acquire;
 use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
@@ -25,6 +25,19 @@ use entry_iter::EntryIter;
 pub struct Directory<E: Debug, IO: crate::io::IO<Error = E>> {
     pub(crate) meta: MetaFileDirectory<IO>,
     pub(crate) upcase_table: Rc<UpcaseTable>,
+    #[cfg(feature = "async")]
+    closed: bool,
+}
+
+impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
+    pub(crate) fn new(meta: MetaFileDirectory<IO>, upcase_table: Rc<UpcaseTable>) -> Self {
+        match () {
+            #[cfg(not(feature = "async"))]
+            _ => Self { meta, upcase_table },
+            #[cfg(feature = "async")]
+            _ => Self { meta, upcase_table, closed: false },
+        }
+    }
 }
 
 pub enum FileOrDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
@@ -73,7 +86,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             let array: MaybeUninit<[u16; MAX_FILENAME_SIZE / 2]> = MaybeUninit::uninit();
             let mut array: [u16; MAX_FILENAME_SIZE / 2] = unsafe { array.assume_init() };
             for i in 0..(file_directory.secondary_count - 1) as usize {
-                if cfg!(feature = "limit-max-filename-size") && (i + 1) * 15 > array.len() {
+                if cfg!(feature = "limit-filename-size") && (i + 1) * 15 > array.len() {
                     continue;
                 }
                 let entry: &Filename = unsafe { mem::transmute(iter.next().await?.unwrap()) };
@@ -113,13 +126,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
     {
         self.walk_matches(
             |_, _| true,
-            |entryset| {
-                if h(entryset) {
-                    Some(entryset.clone())
-                } else {
-                    None
-                }
-            },
+            |entryset| if h(entryset) { Some(entryset.clone()) } else { None },
         )
         .await
     }
@@ -137,17 +144,11 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 }
                 let length = stream_extension.custom_defined.name_length;
                 let name_hash = stream_extension.custom_defined.name_hash.to_ne();
-                if length as usize != name_length || name_hash != hash {
-                    return false;
-                }
-                true
+                length as usize == name_length && name_hash == hash
             },
-            |entryset| {
-                if upcase_table.equals(name, &entryset.name()) {
-                    Some(entryset.clone())
-                } else {
-                    None
-                }
+            |entryset| match upcase_table.equals(name, &entryset.name()) {
+                true => Some(entryset.clone()),
+                false => None,
             },
         )
         .await
@@ -181,7 +182,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         trace!("Cluster id {} length {} capacity {}", cluster_id, length, capacity);
         if file_attributes.directory() > 0 {
             let upcase_table = self.upcase_table.clone();
-            Ok(FileOrDirectory::Directory(Directory { meta, upcase_table }))
+            Ok(FileOrDirectory::Directory(Directory::new(meta, upcase_table)))
         } else {
             Ok(FileOrDirectory::File(File::new(meta, sector_ref)))
         }
@@ -366,23 +367,21 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         acquire!(self.meta.io).flush().await
     }
 
-    #[cfg(all(feature = "async", not(feature = "std")))]
+    #[cfg(feature = "async")]
     /// `no_std` async only which must be explicitly called
     pub async fn close(mut self) -> Result<(), Error<E>> {
+        self.closed = true;
         self.meta.close().await
     }
 }
 
-#[cfg(any(not(feature = "async"), feature = "std"))]
 impl<E: core::fmt::Debug, IO: crate::io::IO<Error = E>> Drop for Directory<E, IO> {
     fn drop(&mut self) {
-        match () {
-            #[cfg(all(feature = "async", not(feature = "std")))]
-            () => panic!("Close must be explicit called"),
-            #[cfg(all(feature = "async", feature = "std"))]
-            () => async_std::task::block_on(self.meta.close()).unwrap(),
-            #[cfg(not(feature = "async"))]
-            () => self.meta.close().unwrap(),
+        #[cfg(feature = "async")]
+        if !self.closed {
+            panic!("Close must be explicitly called");
         }
+        #[cfg(not(feature = "async"))]
+        self.meta.close().unwrap();
     }
 }

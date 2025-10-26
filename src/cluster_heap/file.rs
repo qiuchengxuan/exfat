@@ -20,12 +20,19 @@ pub struct File<E: Debug, IO: crate::io::IO<Error = E>> {
     pub(crate) size: u64,
     cursor: u64,
     dirty: bool,
+    #[cfg(feature = "async")]
+    closed: bool,
 }
 
 impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     pub(crate) fn new(meta: MetaFileDirectory<IO>, sector_ref: SectorRef) -> Self {
         let size = meta.metadata.length();
-        Self { meta, sector_ref, size, cursor: 0, dirty: false }
+        match () {
+            #[cfg(not(feature = "async"))]
+            () => Self { meta, sector_ref, size, cursor: 0, dirty: false },
+            #[cfg(feature = "async")]
+            () => Self { meta, sector_ref, size, cursor: 0, dirty: false, closed: false },
+        }
     }
 
     pub fn change_options(&mut self, f: impl Fn(&mut FileOptions)) {
@@ -215,28 +222,19 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     #[cfg(all(feature = "async", not(feature = "std")))]
     /// `no_std` async only which must be explicitly called
     pub async fn close(mut self) -> Result<(), Error<E>> {
-        self.flush().await?;
-        self.meta.close().await
+        self.closed = true;
+        self.flush().await.and(self.meta.close().await)
     }
 }
 
 #[cfg(any(not(feature = "async"), feature = "std"))]
 impl<E: Debug, IO: crate::io::IO<Error = E>> Drop for File<E, IO> {
     fn drop(&mut self) {
-        match () {
-            #[cfg(all(feature = "async", not(feature = "std")))]
-            () => panic!("Close must be explicit called"),
-            #[cfg(all(feature = "async", feature = "std"))]
-            () => async_std::task::block_on(async {
-                self.flush().await?;
-                self.meta.close().await
-            })
-            .unwrap(),
-            #[cfg(not(feature = "async"))]
-            () => {
-                self.flush().unwrap();
-                self.meta.close().unwrap();
-            }
+        #[cfg(feature = "async")]
+        if !self.closed {
+            panic!("Close must be explicitly called")
         }
+        #[cfg(not(feature = "async"))]
+        self.flush().and(self.meta.close()).unwrap();
     }
 }

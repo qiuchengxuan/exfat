@@ -1,10 +1,12 @@
 #[cfg(all(feature = "sync", not(feature = "async"), feature = "std"))]
 pub(crate) use std::sync::Mutex;
 
-#[cfg(all(feature = "sync", feature = "async", feature = "std"))]
-pub(crate) use async_std::sync::Mutex;
+#[cfg(all(feature = "sync", feature = "async", feature = "smol"))]
+pub(crate) use smol::sync::Mutex;
 #[cfg(all(feature = "sync", not(feature = "std")))]
 pub(crate) use spin::Mutex;
+#[cfg(all(feature = "sync", feature = "async", feature = "tokio"))]
+pub(crate) use tokio::sync::Mutex;
 
 #[cfg(feature = "sync")]
 pub(crate) type Shared<T> = alloc::sync::Arc<Mutex<T>>;
@@ -32,20 +34,6 @@ macro_rules! acquire {
             () => $shared.lock(),
             #[cfg(not(feature = "sync"))]
             () => $shared.borrow_mut(),
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! try_unwrap {
-    ($shared: expr) => {
-        match () {
-            #[cfg(all(feature = "sync", any(feature = "async-std", not(feature = "std"))))]
-            () => alloc::sync::Arc::try_unwrap($shared).map(|mutex| mutex.into_inner()),
-            #[cfg(all(feature = "sync", feature = "std", not(feature = "async-std")))]
-            () => alloc::sync::Arc::try_unwrap($shared).map(|mutex| mutex.into_inner().unwrap()),
-            #[cfg(not(feature = "sync"))]
-            () => alloc::rc::Rc::try_unwrap($shared).map(|cell| cell.into_inner()),
         }
     };
 }

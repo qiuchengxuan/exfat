@@ -1,11 +1,19 @@
 use std::mem::MaybeUninit;
 use std::slice::from_raw_parts;
 
-#[cfg(feature = "async")]
-use async_std as std_;
+use std::io::SeekFrom;
+use std::path::Path;
 #[cfg(not(feature = "async"))]
-use std as std_;
-use std_::{fs::File, io::prelude::*, io::SeekFrom, path::Path};
+use std::{fs, io::prelude::*};
+
+#[cfg(all(feature = "async", feature = "smol"))]
+use smol::fs;
+#[cfg(all(feature = "async", feature = "smol"))]
+use smol::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+#[cfg(all(feature = "async", feature = "tokio"))]
+use tokio::fs;
+#[cfg(all(feature = "async", feature = "tokio"))]
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[cfg(feature = "async")]
 use async_trait::async_trait;
@@ -16,7 +24,7 @@ const MAX_SECTOR_SIZE: usize = 4096;
 
 #[derive(Debug)]
 pub struct FileIO {
-    file: File,
+    file: fs::File,
     sector_size_shift: u8,
     buffer: MaybeUninit<[u8; MAX_SECTOR_SIZE]>,
 }
@@ -26,12 +34,12 @@ impl FileIO {
     pub async fn open<P: AsRef<Path>>(filepath: P) -> std::io::Result<Self> {
         let mut options = match () {
             #[cfg(feature = "async")]
-            () => async_std::fs::OpenOptions::new(),
+            () => fs::OpenOptions::new(),
             #[cfg(not(feature = "async"))]
-            () => File::options(),
+            () => fs::File::options(),
         };
-        let result = options.read(true).write(true).open(filepath).await;
-        result.map(|file| Self { file, sector_size_shift: 9, buffer: MaybeUninit::uninit() })
+        let file = options.read(true).write(true).open(filepath).await?;
+        Ok(Self { file, sector_size_shift: 9, buffer: MaybeUninit::uninit() })
     }
 }
 

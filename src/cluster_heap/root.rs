@@ -20,7 +20,7 @@ use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::RawEntry;
-use crate::sync::{acquire, shared, Shared};
+use crate::sync::{Shared, acquire, shared};
 use crate::types::{ClusterID, SectorID};
 
 pub struct RootDirectory<E: Debug, IO: crate::io::IO<Error = E>> {
@@ -91,7 +91,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         drop(borrow_io);
         let meta =
             MetaFileDirectory { io, context, fat_info, fs_info, metadata, options, sector_ref };
-        let directory = Directory { meta, upcase_table: upcase_table_data };
+        let directory = Directory::new(meta, upcase_table_data);
         Ok(Self { directory, upcase_table, volumn_label })
     }
 
@@ -130,6 +130,6 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         if !context.opened_entries.add(meta.id()) {
             return Err(OperationError::AlreadyOpen.into());
         }
-        Ok(Directory { meta, upcase_table: self.directory.upcase_table.clone() })
+        Ok(Directory::new(meta, self.directory.upcase_table.clone()))
     }
 }

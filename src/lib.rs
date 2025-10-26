@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
+#[cfg(all(feature = "async", feature = "std", not(any(feature = "smol", feature = "tokio"))))]
+compile_error!("Either smol or tokio must be selected");
+
 extern crate alloc;
 
 #[macro_use]
@@ -32,7 +35,7 @@ pub use cluster_heap::root::RootDirectory;
 use error::{DataError, Error, ImplementationError};
 use io::IOWrapper;
 pub use region::data::entryset::primary::DateTime;
-use sync::{shared, Shared};
+use sync::{Shared, shared};
 use types::ClusterID;
 
 pub struct ExFAT<IO> {
@@ -132,7 +135,15 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
 
     pub fn try_free(self) -> Result<IO, Self> {
         let ExFAT { io, serial_number, fat_info, fs_info, root } = self;
-        match try_unwrap!(io) {
+        let io = match () {
+            #[cfg(all(feature = "sync", any(feature = "tokio", feature = "smol")))]
+            () => alloc::sync::Arc::try_unwrap(io).map(|mutex| mutex.into_inner()),
+            #[cfg(all(feature = "sync", feature = "std", not(feature = "async")))]
+            () => alloc::sync::Arc::try_unwrap(io).map(|mutex| mutex.into_inner().unwrap()),
+            #[cfg(not(feature = "sync"))]
+            () => alloc::rc::Rc::try_unwrap(io).map(|cell| cell.into_inner()),
+        };
+        match io {
             Ok(io) => Ok(io.unwrap()),
             Err(io) => Err(Self { io, serial_number, fat_info, fs_info, root }),
         }

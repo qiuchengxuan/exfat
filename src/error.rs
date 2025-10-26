@@ -1,6 +1,7 @@
-use core::fmt::{Debug, Display, Formatter, Result};
+use displaydoc::Display;
+use thiserror::Error;
 
-#[derive(displaydoc::Display)]
+#[derive(Debug, Display)]
 pub enum DataError {
     /// Not exFAT filesystem
     NotExFAT,
@@ -18,7 +19,9 @@ pub enum DataError {
     Metadata,
 }
 
-#[derive(displaydoc::Display)]
+impl core::error::Error for DataError {}
+
+#[derive(Debug, Display)]
 pub enum ImplementationError {
     /// TexFAT not supported
     TexFATNotSupported,
@@ -26,7 +29,9 @@ pub enum ImplementationError {
     CreateDirectoryNotSupported,
 }
 
-#[derive(displaydoc::Display)]
+impl core::error::Error for ImplementationError {}
+
+#[derive(Debug, Display)]
 pub enum InputError {
     /// Name too long
     NameTooLong,
@@ -36,7 +41,9 @@ pub enum InputError {
     Size,
 }
 
-#[derive(displaydoc::Display)]
+impl core::error::Error for InputError {}
+
+#[derive(Debug, Display)]
 pub enum AllocationError {
     /// Allocation-not-possible is set in file metadata
     NotPossible,
@@ -46,7 +53,9 @@ pub enum AllocationError {
     NoMoreCluster,
 }
 
-#[derive(displaydoc::Display)]
+impl core::error::Error for AllocationError {}
+
+#[derive(Debug, Display)]
 pub enum OperationError {
     /// File or directory already open
     AlreadyOpen,
@@ -64,53 +73,20 @@ pub enum OperationError {
     EOF,
 }
 
+impl core::error::Error for OperationError {}
+
+#[derive(Error, Debug)]
 pub enum Error<E> {
+    #[error("IO({0:?})")]
     IO(E),
-    Data(DataError),
-    Implementation(ImplementationError),
-    Input(InputError),
-    Operation(OperationError),
-    Allocation(AllocationError),
+    #[error("{0:?}")]
+    Data(#[from] DataError),
+    #[error("{0:?}")]
+    Implementation(#[from] ImplementationError),
+    #[error("{0:?}")]
+    Input(#[from] InputError),
+    #[error("{0:?}")]
+    Operation(#[from] OperationError),
+    #[error("{0:?}")]
+    Allocation(#[from] AllocationError),
 }
-
-impl<E: Debug> Debug for Error<E> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        match self {
-            Self::IO(e) => write!(f, "IO({:?})", e),
-            Self::Data(e) => write!(f, "{}", e),
-            Self::Implementation(e) => write!(f, "{}", e),
-            Self::Input(e) => write!(f, "{}", e),
-            Self::Operation(e) => write!(f, "{}", e),
-            Self::Allocation(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl<E: Display> Display for Error<E> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        match self {
-            Self::IO(e) => write!(f, "IO({})", e),
-            Self::Data(e) => write!(f, "{}", e),
-            Self::Implementation(e) => write!(f, "{}", e),
-            Self::Input(e) => write!(f, "{}", e),
-            Self::Operation(e) => write!(f, "{}", e),
-            Self::Allocation(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-macro_rules! from_error {
-    ($type:ty, $variant:ident) => {
-        impl<E> From<$type> for Error<E> {
-            fn from(e: $type) -> Self {
-                Self::$variant(e)
-            }
-        }
-    };
-}
-
-from_error!(DataError, Data);
-from_error!(ImplementationError, Implementation);
-from_error!(InputError, Input);
-from_error!(OperationError, Operation);
-from_error!(AllocationError, Allocation);
