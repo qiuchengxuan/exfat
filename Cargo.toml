@@ -1,6 +1,6 @@
 [package]
 name = "embedded-exfat"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["qiuchengxuan <qiuchengxuan@gmail.com>"]
 repository = "https://github.com/qiuchengxuan/exfat"
@@ -14,7 +14,7 @@ async-trait = "0.1"
 bitfield = "0.19"
 chrono = { version = "0.4", optional = true, default-features = false }
 deasync = "0.1"
-derive_more = { version = "2.0", features = ["display", "from", "into"] }
+derive_more = { version = "2.0", features = ["display", "from", "into"], default-features = false }
 displaydoc = { version = "0.2", default-features = false }
 heapless = "0.9"
 hex-literal = "1.0"
@@ -27,7 +27,7 @@ tokio = { version = "1.47.2", optional = true, features = ["fs", "io-std", "io-u
 
 [features]
 async = []
-std = ["chrono/std", "chrono/clock"]
+std = ["chrono/std", "chrono/clock", "thiserror/std", "derive_more/std", "displaydoc/std"]
 sync = []
 default = ["std", "precise-allocation-counter"]
 extern-datetime-now = []

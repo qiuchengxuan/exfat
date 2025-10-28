@@ -1,17 +1,18 @@
-use std::fmt::Display;
-use std::mem::{transmute, MaybeUninit};
+use std::mem::{MaybeUninit, transmute};
 
+use derive_more::Display;
 use exfat::types::SectorID;
 use mbr_nostd::{MasterBootRecord, PartitionTable};
-use sdmmc::bus::linux::{CountDown, GPIO, SPI};
+use sdmmc::SD;
+use sdmmc::bus::linux::{GPIO, IOError, SPI, SystemClock};
 use sdmmc::bus::spi::bus;
 use sdmmc::bus::spi::{BUSError, Bus};
 use sdmmc::delay::std::Delay;
-use sdmmc::SD;
 use spidev::SpidevOptions;
+use thiserror::Error;
 
 pub struct SDMMC {
-    sd: SD<Bus<SPI, GPIO, CountDown>>,
+    sd: SD<Bus<SPI, GPIO, SystemClock>>,
     offset: u32, // unit block
     num_blocks: u64,
     block_size_shift: u8,
@@ -22,7 +23,7 @@ pub struct SDMMC {
 }
 
 impl exfat::io::IO for SDMMC {
-    type Error = BUSError<std::io::Error, std::io::Error>;
+    type Error = BUSError<std::io::Error, IOError>;
 
     fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
         if !(self.block_size_shift <= shift && shift <= 12) {
@@ -75,18 +76,12 @@ impl exfat::io::IO for SDMMC {
     }
 }
 
+#[derive(Debug, Display, Error)]
 pub enum Error {
-    SDMMC(BUSError<std::io::Error, std::io::Error>),
+    #[display("SDMMC: {_0:?}")]
+    SDMMC(#[from] BUSError<std::io::Error, IOError>),
+    #[display("{_0}")]
     String(&'static str),
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SDMMC(error) => write!(f, "{:?}", error),
-            Self::String(s) => write!(f, "{}", s),
-        }
-    }
 }
 
 impl From<std::io::Error> for Error {
@@ -95,19 +90,13 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<BUSError<std::io::Error, std::io::Error>> for Error {
-    fn from(error: BUSError<std::io::Error, std::io::Error>) -> Self {
-        Self::SDMMC(error)
-    }
-}
-
 impl SDMMC {
     pub fn new(spi: &str, cs: u16) -> Result<Self, Error> {
-        let mut bus = sdmmc::bus::linux::spi(spi, cs).map_err(Error::from)?;
+        let mut bus = sdmmc::bus::linux::spi(spi, cs)?;
         let card = bus.init(Delay)?;
         let mut sd = SD::init(bus, card)?;
         let options = SpidevOptions { max_speed_hz: Some(2_000_000), ..Default::default() };
-        sd.bus(|bus| bus.spi(|spi| spi.0.configure(&options))).map_err(Error::from)?;
+        sd.bus(|bus| bus.spi(|spi| spi.0.configure(&options)))?;
         let offset = 0;
         let block_size_shift = sd.block_size_shift();
         let num_blocks: u64 = sd.num_blocks().into();

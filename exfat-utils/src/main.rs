@@ -132,28 +132,19 @@ where
     }
 }
 
-fn display_error<E: std::fmt::Display>(error: E) -> () {
-    eprintln!("{}", error);
-    ()
-}
-
-fn debug_error<E: std::fmt::Debug>(error: E) -> () {
-    eprintln!("{:?}", error);
-    ()
-}
-
-fn run(args: Args) -> Result<(), ()> {
+fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.device.starts_with("/dev/spidev") {
-        let cs = args.cs.ok_or("CS is required for SPI device").map_err(display_error)?;
-        let mut sdmmc = sdmmc::SDMMC::new(&args.device, cs).map_err(display_error)?;
+        let cs = args.cs.ok_or("CS is required for SPI device")?;
+        let mut sdmmc = sdmmc::SDMMC::new(&args.device, cs)?;
         if let Some(partition) = args.partition {
-            sdmmc.set_patition(partition as usize).map_err(display_error)?;
+            sdmmc.set_patition(partition as usize)?;
         }
-        action(sdmmc, args.action).map_err(debug_error)
+        action(sdmmc, args.action)?;
     } else {
-        let file = FileIO::open(&args.device).map_err(display_error)?;
-        action(file, args.action).map_err(display_error)
+        let file = FileIO::open(&args.device)?;
+        action(file, args.action)?;
     }
+    Ok(())
 }
 
 fn main() {
@@ -166,7 +157,8 @@ fn main() {
     };
     log::set_max_level(level);
     env_logger::builder().filter(None, level).target(env_logger::Target::Stdout).init();
-    if run(args).is_err() {
+    if let Some(err) = run(args).err() {
+        eprintln!("{}", err);
         std::process::exit(1);
     }
 }
