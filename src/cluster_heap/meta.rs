@@ -6,12 +6,12 @@ use super::metadata::Metadata;
 use crate::error::{AllocationError, DataError, Error, OperationError};
 use crate::fat;
 use crate::file::{FileOptions, TouchOptions};
-use crate::fs::{self, SectorRef};
+use crate::fs::{self, SectorIndex};
 use crate::io::IOWrapper;
 use crate::region::data::entryset::primary::DateTime;
-use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
+use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
 use crate::region::fat::Entry;
-use crate::sync::{acquire, Shared};
+use crate::sync::{Shared, acquire};
 use crate::types::ClusterID;
 
 pub(crate) struct MetaFileDirectory<IO> {
@@ -21,7 +21,7 @@ pub(crate) struct MetaFileDirectory<IO> {
     pub fs_info: fs::Info,
     pub metadata: Metadata,
     pub options: FileOptions,
-    pub sector_ref: SectorRef,
+    pub sector_index: SectorIndex,
 }
 
 impl<IO> Clone for MetaFileDirectory<IO> {
@@ -37,33 +37,33 @@ impl<IO> Clone for MetaFileDirectory<IO> {
 
 impl<IO> MetaFileDirectory<IO> {
     pub(crate) fn id(&self) -> EntryID {
-        let entry_ref = &self.metadata.entry_ref;
-        EntryID { sector_id: entry_ref.sector_ref.id(&self.fs_info), index: entry_ref.index }
+        let entry_index = &self.metadata.entry_index;
+        EntryID { sector_id: entry_index.sector_index.id(&self.fs_info), index: entry_index.index }
     }
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> MetaFileDirectory<IO> {
-    pub async fn next(&mut self, sector_ref: SectorRef) -> Result<SectorRef, Error<E>> {
+    pub async fn next(&mut self, sector_index: SectorIndex) -> Result<SectorIndex, Error<E>> {
         let fat_chain = self.metadata.stream_extension.general_secondary_flags.fat_chain();
-        if sector_ref.sector_index != self.fs_info.sectors_per_cluster() {
-            return Ok(sector_ref.next(self.fs_info.sectors_per_cluster_shift));
+        if sector_index.sector_index != self.fs_info.sectors_per_cluster() {
+            return Ok(sector_index.next(self.fs_info.sectors_per_cluster_shift));
         }
         if !fat_chain {
             let num_clusters = (self.metadata.length() / self.fs_info.cluster_size() as u64) as u32;
-            let max_cluster_id = self.sector_ref.cluster_id + num_clusters;
-            if sector_ref.cluster_id + 1u32 >= max_cluster_id {
+            let max_cluster_id = self.sector_index.cluster_id + num_clusters;
+            if sector_index.cluster_id + 1u32 >= max_cluster_id {
                 return Err(OperationError::EOF.into());
             }
-            return Ok(sector_ref.next(self.fs_info.sectors_per_cluster_shift));
+            return Ok(sector_index.next(self.fs_info.sectors_per_cluster_shift));
         }
-        let cluster_id = sector_ref.cluster_id;
+        let cluster_id = sector_index.cluster_id;
         let option = self.fat_info.fat_sector_id(cluster_id);
         let sector_id = option.ok_or(Error::Data(DataError::FATChain))?;
         let mut io = acquire!(self.io);
         let sector = io.read(sector_id).await?;
-        match self.fat_info.next_cluster_id(sector, sector_ref.cluster_id) {
-            Ok(Entry::Next(cluster_id)) => Ok(SectorRef::new(cluster_id, 0)),
+        match self.fat_info.next_cluster_id(sector, sector_index.cluster_id) {
+            Ok(Entry::Next(cluster_id)) => Ok(SectorIndex::new(cluster_id, 0)),
             Ok(Entry::Last) => Err(OperationError::EOF.into()),
             _ => Err(DataError::FATChain.into()),
         }
@@ -89,9 +89,9 @@ impl<E, IO: crate::io::IO<Error = E>> MetaFileDirectory<IO> {
         if !self.metadata.stream_extension.general_secondary_flags.allocation_possible() {
             return Err(AllocationError::NotPossible.into());
         }
-        let fragment = !self.options.dont_fragment;
+        let nofrag = if self.options.dont_fragment { Some(last) } else { None };
         let mut context = acquire!(self.context);
-        let cluster_id = context.allocation_bitmap.allocate(last, fragment).await?;
+        let cluster_id = context.allocation_bitmap.allocate(nofrag).await?;
 
         let cluster_size = self.fs_info.cluster_size() as u64;
         let metadata = &mut self.metadata;
@@ -103,7 +103,7 @@ impl<E, IO: crate::io::IO<Error = E>> MetaFileDirectory<IO> {
         } else if last + 1u32 != cluster_id || fat_chain {
             let mut io = acquire!(self.io);
             if !fat_chain && metadata.capacity() > cluster_size {
-                let first = self.sector_ref.cluster_id;
+                let first = self.sector_index.cluster_id;
                 for i in 0..(metadata.capacity() / cluster_size - 1) {
                     let cluster_id = first + i as u32;
                     let next = cluster_id + 1u32;
@@ -130,18 +130,18 @@ impl<E, IO: crate::io::IO<Error = E>> MetaFileDirectory<IO> {
 
     pub async fn sync(&mut self) -> Result<(), Error<E>> {
         let metadata = &mut self.metadata;
-        if !metadata.entry_ref.sector_ref.cluster_id.valid() {
+        if !metadata.entry_index.sector_index.cluster_id.valid() {
             // Probably root directory
             return Ok(());
         }
         if metadata.dirty {
             trace!("Flush metadatadata since dirty");
-            let mut sector_id = metadata.entry_ref.sector_ref.id(&self.fs_info);
+            let mut sector_id = metadata.entry_index.sector_index.id(&self.fs_info);
             let bytes: &RawEntry = unsafe { transmute(&metadata.file_directory) };
-            let offset = metadata.entry_ref.index as usize * ENTRY_SIZE;
+            let offset = metadata.entry_index.index as usize * ENTRY_SIZE;
             let mut io = acquire!(self.io);
             io.write(sector_id, offset, &bytes[..]).await?;
-            let mut offset = (metadata.entry_ref.index as usize + 1) * ENTRY_SIZE;
+            let mut offset = (metadata.entry_index.index as usize + 1) * ENTRY_SIZE;
             if offset == self.fs_info.sector_size() as usize {
                 offset = 0;
                 sector_id += 1u32;

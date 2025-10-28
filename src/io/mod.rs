@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use crate::error::Error;
 use crate::types::SectorID;
 
-pub type Block = [u8; 512];
+pub const BLOCK_SIZE: usize = 512;
+pub type Block = [u8; BLOCK_SIZE];
 
 pub(crate) fn flatten(sector: &[Block]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(&sector[0][0], sector.len() * 512) }

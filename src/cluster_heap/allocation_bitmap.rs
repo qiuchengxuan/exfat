@@ -3,14 +3,14 @@ use core::mem::{size_of, transmute};
 use memoffset::offset_of;
 
 use crate::error::{AllocationError, DataError, Error};
-use crate::fat;
-use crate::io::IOWrapper;
+use crate::fat::Info as FAT;
+use crate::io::{BLOCK_SIZE, IOWrapper};
 use crate::region::boot::BootSector;
 use crate::region::fat::Entry;
-use crate::sync::{acquire, Shared};
+use crate::sync::{Shared, acquire};
 use crate::types::{ClusterID, SectorID};
 
-const ARRAY_SIZE: usize = 512 / size_of::<usize>();
+const BITMAP_SIZE: usize = BLOCK_SIZE / size_of::<usize>();
 
 #[inline]
 fn first_zero_bit(bits: u8) -> u8 {
@@ -33,47 +33,63 @@ fn bit_to_offset(bit: u8) -> u8 {
     }
 }
 
+#[derive(Copy, Clone)]
+struct Meta {
+    size: u32,
+    num_clusters: u32,
+    sector_size_shift: u8,
+    percent_inuse: u8,
+}
+
 #[derive(Clone)]
 pub struct DumbAllocator<IO> {
     io: Shared<IOWrapper<IO>>,
     base: SectorID,
-    fat_info: fat::Info,
-    length: u32,
-    num_clusters: u32,
-    sector_size_shift: u8,
-    percent_inuse: u8,
-    maybe_available_offset: u32,
-    num_inuse_clusters: u32,
+    fat: FAT,
+    cursor: ClusterID,
+    meta: Meta,
+    num_inuse: u32,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
+    #[inline]
+    fn sector_size(&self) -> u32 {
+        1 << self.meta.sector_size_shift
+    }
+
+    #[inline]
+    fn num_sectors(&self) -> u32 {
+        self.meta.size / self.sector_size()
+    }
+
     async fn init(&mut self) -> Result<(), Error<E>> {
-        let mut sector_id = self.base;
-        let mut io = acquire!(self.io);
-        let mut sector = io.read(sector_id).await?;
-        let mut array: &[[usize; ARRAY_SIZE]] = unsafe { transmute(sector) };
-        let sector_size = 1 << self.sector_size_shift;
+        let sector_size = self.sector_size();
         let mut num_inuse = 0;
-        for i in 0..(self.length as usize / size_of::<usize>()) {
-            let index = i % (sector_size / size_of::<usize>());
-            if i > 0 && index == 0 {
-                sector_id += 1u64;
-                sector = io.read(sector_id).await?;
-                array = unsafe { transmute(sector) };
+        let mut io = acquire!(self.io);
+        for sector_offset in 0..self.num_sectors() {
+            let sector_id = self.base + sector_offset;
+            let sector = io.read(sector_id).await?;
+            let blocks: &[[usize; BITMAP_SIZE]] = unsafe { transmute(sector) };
+            for i in 0..(sector_size as usize / BLOCK_SIZE) {
+                let sum = blocks[i].iter().map(|bits| bits.count_ones()).sum::<u32>();
+                if !self.cursor.valid() && sum < sector_size {
+                    let num_clusters = sector_offset * sector_size + (i * BLOCK_SIZE) as u32;
+                    self.cursor = ClusterID::FIRST + num_clusters;
+                }
+                num_inuse += sum;
             }
-            num_inuse += array[index / ARRAY_SIZE][index % ARRAY_SIZE].count_ones();
         }
-        self.num_inuse_clusters = num_inuse;
-        debug!("Num inuse clusters is {}/{}", num_inuse, self.num_clusters);
+        self.num_inuse = num_inuse;
+        debug!("Clusters stats: {}/{}", num_inuse, self.meta.num_clusters);
         Ok(())
     }
 
     pub(crate) async fn new(
         io: Shared<IOWrapper<IO>>,
         base: SectorID,
-        fat_info: fat::Info,
-        length: u32,
+        fat: FAT,
+        size: u32,
     ) -> Result<Self, Error<E>> {
         let mut borrow_io = acquire!(io);
         let blocks = borrow_io.read(0.into()).await?;
@@ -83,18 +99,11 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let percent_inuse = boot_sector.percent_inuse;
         drop(borrow_io);
 
-        let mut bitmap = Self {
-            io,
-            base,
-            fat_info,
-            length,
-            num_clusters,
-            sector_size_shift,
-            percent_inuse,
-            maybe_available_offset: 0,
-            num_inuse_clusters: ((percent_inuse + 1) as u64 * num_clusters as u64 / 100) as u32 - 1,
-        };
+        let meta = Meta { size, num_clusters, sector_size_shift, percent_inuse };
+        let num_inuse = ((percent_inuse + 1) as u64 * num_clusters as u64 / 100) as u32 - 1;
+        let mut bitmap = Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse };
         if cfg!(feature = "precise-allocation-counter") {
+            bitmap.cursor = ClusterID::INVALID;
             bitmap.init().await?;
         }
         Ok(bitmap)
@@ -103,10 +112,10 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     async fn is_available(&mut self, cluster_id: ClusterID) -> Result<Option<u8>, Error<E>> {
         let offset = u32::from(cluster_id) - 2;
         let (byte_offset, bit_offset) = (offset / 8, offset as u8 % 8);
-        if byte_offset >= self.length {
+        if byte_offset >= self.meta.size {
             return Ok(None);
         }
-        let sector_size = 1 << self.sector_size_shift;
+        let sector_size = 1 << self.meta.sector_size_shift;
         let sector_id = self.base + offset / 8 / sector_size;
         let mut io = acquire!(self.io);
         let sector = io.read(sector_id).await?;
@@ -117,11 +126,11 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
 
     async fn find_available(&mut self) -> Result<(u32, u8), Error<E>> {
         let mut io = acquire!(self.io);
-        let sector_size = 1 << self.sector_size_shift;
-        let mut sector_id = self.base + self.maybe_available_offset / sector_size;
+        let sector_size = 1 << self.meta.sector_size_shift;
+        let mut sector_id = self.base + self.cursor.offset() / sector_size;
         let mut sector = io.read(sector_id).await?;
-        for i in self.maybe_available_offset..self.length {
-            if i != self.maybe_available_offset && i % sector_size == 0 {
+        for i in self.cursor.offset()..self.meta.size {
+            if i != self.cursor.offset() && i % sector_size == 0 {
                 sector_id += 1u64;
                 sector = io.read(sector_id).await?;
             }
@@ -140,73 +149,61 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
 
     async fn ensure_percent_inuse(&mut self) -> Result<(), Error<E>> {
         let offset = offset_of!(BootSector, percent_inuse);
-        let percent_inuse = Self::ratio(self.num_inuse_clusters, self.num_clusters);
-        if percent_inuse as u8 == self.percent_inuse {
+        let percent_inuse = Self::ratio(self.num_inuse, self.meta.num_clusters);
+        if percent_inuse as u8 == self.meta.percent_inuse {
             return Ok(());
         }
-        self.percent_inuse = percent_inuse as u8;
-        let bytes: [u8; 1] = [self.percent_inuse];
+        self.meta.percent_inuse = percent_inuse as u8;
+        let bytes: [u8; 1] = [self.meta.percent_inuse];
         acquire!(self.io).write(0.into(), offset, &bytes).await
     }
 
-    pub async fn allocate(&mut self, last: ClusterID, frag: bool) -> Result<ClusterID, Error<E>> {
-        if self.maybe_available_offset >= self.length {
+    pub async fn allocate(&mut self, nofrag: Option<ClusterID>) -> Result<ClusterID, Error<E>> {
+        if self.meta.percent_inuse == 100 {
             return Err(AllocationError::NoMoreCluster.into());
         }
-        let offset = u32::from(last + 1u32) - 2;
-        let mut byte_offset = offset / 8;
-        let mut bit_offset = offset as u8 % 8;
+        let mut cursor = nofrag.unwrap_or(self.cursor);
         let mut bits = 0xFFu8;
 
-        let sector_size = 1 << self.sector_size_shift;
-        if last.valid() {
-            if let Some(byte) = self.is_available(last + 1u32).await? {
-                bits = byte;
-            } else if !frag {
-                return Err(AllocationError::Fragment.into());
-            }
+        let sector_size = 1 << self.meta.sector_size_shift;
+        if let Some(byte) = self.is_available(cursor + 1u32).await? {
+            bits = byte;
+        } else if nofrag.is_some() {
+            return Err(AllocationError::Fragment.into());
         }
         if bits == 0xFF {
-            (byte_offset, bits) = self.find_available().await?;
-            bit_offset = bit_to_offset(first_zero_bit(bits));
+            let (byte_offset, bits) = self.find_available().await?;
+            cursor = ClusterID::FIRST + byte_offset * 8 + bit_to_offset(first_zero_bit(bits));
         };
-        let cluster_id = ClusterID::from(byte_offset as u32 * 8 + bit_offset as u32 + 2);
-        let sector_id = self.base + byte_offset / sector_size;
-        let offset = byte_offset % sector_size;
-        bits |= 1 << bit_offset;
+        let offset = cursor.offset();
+        let sector_id = self.base + offset / sector_size;
+        let offset = (offset / 8) % sector_size;
+        bits |= 1 << (offset % 8);
         acquire!(self.io).write(sector_id, offset as usize, &[bits; 1]).await?;
-        self.num_inuse_clusters += 1;
-        self.maybe_available_offset = byte_offset + (bits == 0xFF) as u32;
-        if !cfg!(feature = "precise-allocation-counter") {
-            if self.maybe_available_offset * 8 > self.num_inuse_clusters {
-                self.num_inuse_clusters = self.maybe_available_offset * 8;
-            }
-        }
+        self.num_inuse += 1;
+        self.cursor = cursor + (bits == 0xFF) as u32;
         self.ensure_percent_inuse().await?;
-        trace!("Allocated cluster {}", cluster_id);
-        Ok(cluster_id)
+        trace!("Allocated cluster {}", cursor);
+        Ok(cursor)
     }
 
     async fn release_one(&mut self, cluster_id: ClusterID) -> Result<(), Error<E>> {
         trace!("Release cluster id {}", cluster_id);
-        let index = u32::from(cluster_id) - 2;
-        let byte_offset = index / 8;
-        if byte_offset >= self.length {
+        let cluster_offset = cluster_id.offset();
+        let byte_offset = cluster_offset / 8;
+        if byte_offset >= self.meta.size {
             warn!("Cluster ID {} out of range", cluster_id);
             return Err(DataError::FATChain.into());
         }
         let mut io = acquire!(self.io);
-        let sector_size = 1 << self.sector_size_shift;
+        let sector_size = 1 << self.meta.sector_size_shift;
         let sector_offset = byte_offset / sector_size;
         let sector_id = self.base + sector_offset;
         let sector = io.read(sector_id).await?;
         let offset = (byte_offset % sector_size) as usize;
-        let bit_offset = index % 8;
+        let bit_offset = cluster_offset % 8;
         let byte = sector[offset / 512][offset % 512] & !(1 << bit_offset);
         io.write(sector_id, offset, &[byte; 1]).await?;
-        if byte_offset < self.maybe_available_offset {
-            self.maybe_available_offset = byte_offset;
-        }
         Ok(())
     }
 
@@ -220,14 +217,14 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         let mut cluster_id = cluster_id;
         while cluster_id.valid() {
             self.release_one(cluster_id).await?;
-            self.num_inuse_clusters -= 1;
-            let sector_id = match self.fat_info.fat_sector_id(cluster_id) {
+            self.num_inuse -= 1;
+            let sector_id = match self.fat.fat_sector_id(cluster_id) {
                 Some(id) => id,
                 None => return Ok(()),
             };
             let mut io = acquire!(self.io);
             let sector = io.read(sector_id).await?;
-            let entry = match self.fat_info.next_cluster_id(sector, cluster_id) {
+            let entry = match self.fat.next_cluster_id(sector, cluster_id) {
                 Ok(entry) => entry,
                 Err(value) => {
                     warn!("Invalid next entry {:X} for cluster id {}", value, cluster_id);

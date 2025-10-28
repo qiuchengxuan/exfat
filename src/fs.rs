@@ -28,18 +28,18 @@ impl Info {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct SectorRef {
+pub struct SectorIndex {
     pub cluster_id: ClusterID,
     pub sector_index: u32,
 }
 
-impl Display for SectorRef {
+impl Display for SectorIndex {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}:{}", self.cluster_id, self.sector_index)
     }
 }
 
-impl SectorRef {
+impl SectorIndex {
     pub fn id(&self, fs_info: &Info) -> SectorID {
         let index: u32 = self.cluster_id.into();
         let num_sectors = (index as u64 - 2) * fs_info.sectors_per_cluster() as u64;

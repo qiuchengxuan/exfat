@@ -78,7 +78,7 @@ mod test {
         let args = ["-s", "4194304", "test.img"];
         let output = CMD::new("truncate").args(args).output().unwrap();
         assert!(output.status.success());
-        let output = CMD::new("mkfs.exfat").args(["test.img"]).output().unwrap();
+        let output = CMD::new("/usr/sbin/mkfs.exfat").args(["test.img"]).output().unwrap();
         assert!(output.status.success());
 
         let mut file = std::fs::File::open("test.img").unwrap();

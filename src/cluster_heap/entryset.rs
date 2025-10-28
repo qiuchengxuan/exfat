@@ -2,7 +2,7 @@ use core::fmt::Display;
 use core::mem::MaybeUninit;
 
 use crate::file::MAX_FILENAME_SIZE;
-use crate::fs::{self, SectorRef};
+use crate::fs::{self, SectorIndex};
 use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 use crate::types::SectorID;
@@ -14,20 +14,20 @@ pub(crate) struct EntryID {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct EntryRef {
-    pub sector_ref: SectorRef,
+pub(crate) struct EntryIndex {
+    pub sector_index: SectorIndex,
     pub index: u8, // Within sector
 }
 
-impl Display for EntryRef {
+impl Display for EntryIndex {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}.{}", self.sector_ref, self.index)
+        write!(f, "{}.{}", self.sector_index, self.index)
     }
 }
 
-impl EntryRef {
-    pub fn new(sector_ref: SectorRef, index: u8) -> Self {
-        Self { sector_ref, index }
+impl EntryIndex {
+    pub fn new(sector_index: SectorIndex, index: u8) -> Self {
+        Self { sector_index, index }
     }
 }
 
@@ -37,7 +37,7 @@ pub struct EntrySet {
     pub(crate) name_length: u8,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub(crate) entry_ref: EntryRef,
+    pub(crate) entry_index: EntryIndex,
 }
 
 impl Default for EntrySet {
@@ -48,7 +48,7 @@ impl Default for EntrySet {
             name_length: 0,
             file_directory: Default::default(),
             stream_extension: Default::default(),
-            entry_ref: Default::default(),
+            entry_index: Default::default(),
         }
     }
 }
@@ -72,6 +72,7 @@ impl EntrySet {
     }
 
     pub(crate) fn id(&self, fs_info: &fs::Info) -> EntryID {
-        EntryID { sector_id: self.entry_ref.sector_ref.id(fs_info), index: self.entry_ref.index }
+        let sector_id = self.entry_index.sector_index.id(fs_info);
+        EntryID { sector_id, index: self.entry_index.index }
     }
 }

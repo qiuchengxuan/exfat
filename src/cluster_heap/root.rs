@@ -15,7 +15,7 @@ use crate::endian::Little as LE;
 use crate::error::{DataError, Error, OperationError};
 use crate::fat;
 use crate::file::FileOptions;
-use crate::fs::{self, SectorRef};
+use crate::fs::{self, SectorIndex};
 use crate::io::IOWrapper;
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
@@ -40,9 +40,9 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let mut volumn_label: Option<heapless::String<22>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
-        let sector_ref = SectorRef::new(cluster_id, 0);
+        let sector_index = SectorIndex::new(cluster_id, 0);
         let mut borrow_io = acquire!(io);
-        let sector = borrow_io.read(sector_ref.id(&fs_info)).await?;
+        let sector = borrow_io.read(sector_index.id(&fs_info)).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
         for entry in entries.iter() {
             match RawEntryType::from(entry[0]).entry_type() {
@@ -82,7 +82,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let length = upcase_table.data_length.to_ne();
         debug!("Upcase table found at cluster {} length {}", cluster_id, length);
         let mut borrow_io = acquire!(io);
-        let sector = borrow_io.read(SectorRef::new(cluster_id.into(), 0).id(&fs_info)).await?;
+        let sector = borrow_io.read(SectorIndex::new(cluster_id.into(), 0).id(&fs_info)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let mut metadata = Metadata::new(Default::default());
         let options = FileOptions::default();
@@ -90,7 +90,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let upcase_table_data = Rc::new((*array).into());
         drop(borrow_io);
         let meta =
-            MetaFileDirectory { io, context, fat_info, fs_info, metadata, options, sector_ref };
+            MetaFileDirectory { io, context, fat_info, fs_info, metadata, options, sector_index };
         let directory = Directory::new(meta, upcase_table_data);
         Ok(Self { directory, upcase_table, volumn_label })
     }
@@ -99,7 +99,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
         let fs_info = &self.directory.meta.fs_info;
-        let first_sector = SectorRef::new(first_cluster.into(), 0).id(&fs_info);
+        let first_sector = SectorIndex::new(first_cluster.into(), 0).id(&fs_info);
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = fs_info.sector_size();
         let num_sectors = data_length / sector_size as u64;
@@ -110,8 +110,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         }
         let remain = (data_length - num_sectors * sector_size as u64) as usize;
         if remain > 0 {
-            let sector_ref = first_sector + num_sectors;
-            let sector = io.read(sector_ref).await?;
+            let sector_index = first_sector + num_sectors;
+            let sector = io.read(sector_index).await?;
             checksum.write(&crate::io::flatten(sector)[..remain]);
         }
         if checksum.sum() != self.upcase_table.table_checksum.to_ne() {

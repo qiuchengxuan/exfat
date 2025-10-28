@@ -3,15 +3,15 @@ use core::mem;
 
 use super::super::meta::MetaFileDirectory;
 use crate::error::Error;
-use crate::fs::SectorRef;
+use crate::fs::SectorIndex;
 use crate::region::data::entry_type::RawEntryType;
-use crate::region::data::entryset::{RawEntry, ENTRY_SIZE};
+use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
 use crate::sync::acquire;
 
 pub(crate) struct EntryIter<'a, IO> {
     meta: &'a mut MetaFileDirectory<IO>,
     entries: &'a [[RawEntry; 16]],
-    pub sector_ref: SectorRef,
+    pub sector_index: SectorIndex,
     pub index: u8,
 }
 
@@ -20,12 +20,12 @@ impl<'a, E: Debug, IO: crate::io::IO<Error = E>> EntryIter<'a, IO> {
     pub(crate) async fn new(
         meta: &'a mut MetaFileDirectory<IO>,
     ) -> Result<EntryIter<'a, IO>, Error<E>> {
-        let sector_ref = meta.sector_ref;
+        let sector_index = meta.sector_index;
         let mut io = acquire!(meta.io);
-        let sector = io.read(sector_ref.id(&meta.fs_info)).await?;
+        let sector = io.read(sector_index.id(&meta.fs_info)).await?;
         let entries = unsafe { mem::transmute(sector) };
         drop(io);
-        Ok(Self { meta, entries, sector_ref, index: u8::MAX })
+        Ok(Self { meta, entries, sector_index, index: u8::MAX })
     }
 
     pub(crate) async fn skip(&mut self, num_entries: u8) -> Result<(), Error<E>> {
@@ -33,9 +33,9 @@ impl<'a, E: Debug, IO: crate::io::IO<Error = E>> EntryIter<'a, IO> {
         let sector_size = self.meta.fs_info.sector_size() as usize;
         if (self.index as usize * ENTRY_SIZE) >= sector_size {
             self.index -= (sector_size / ENTRY_SIZE) as u8;
-            self.sector_ref = self.meta.next(self.sector_ref).await?;
+            self.sector_index = self.meta.next(self.sector_index).await?;
             let mut io = acquire!(self.meta.io);
-            let sector = io.read(self.sector_ref.id(&self.meta.fs_info)).await?;
+            let sector = io.read(self.sector_index.id(&self.meta.fs_info)).await?;
             self.entries = unsafe { mem::transmute(sector) };
         }
         Ok(())

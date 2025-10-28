@@ -124,7 +124,7 @@ pub struct DateTime {
 }
 
 #[cfg(feature = "extern-datetime-now")]
-extern "Rust" {
+unsafe extern "Rust" {
     pub(crate) fn exfat_datetime_now() -> DateTime;
 }
 
@@ -144,7 +144,8 @@ impl DateTime {
     pub fn localtime(&self) -> Result<chrono::DateTime<Local>, ()> {
         let naive = self.timestamp.chrono_with_millis(self.millisecond as u32)?;
         let offset: FixedOffset = self.utc_offset.try_into()?;
-        let datetime: chrono::DateTime<FixedOffset> = chrono::DateTime::from_naive_utc_and_offset(naive, offset);
+        let datetime: chrono::DateTime<FixedOffset> =
+            chrono::DateTime::from_naive_utc_and_offset(naive, offset);
         Ok(datetime.with_timezone(&Local))
     }
 }

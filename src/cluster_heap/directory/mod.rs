@@ -6,13 +6,13 @@ use core::slice;
 
 use alloc::rc::Rc;
 
-use super::entryset::{EntryRef, EntrySet};
+use super::entryset::{EntryIndex, EntrySet};
 use super::file::File;
 use super::meta::MetaFileDirectory;
 use super::metadata::Metadata;
 use crate::error::{DataError, Error, ImplementationError, InputError, OperationError};
 use crate::file::{FileOptions, MAX_FILENAME_SIZE, TouchOptions};
-use crate::fs::SectorRef;
+use crate::fs::SectorIndex;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory, name_hash};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
@@ -75,7 +75,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             if file_directory.secondary_count < 2 {
                 return Err(DataError::Metadata.into());
             }
-            let entryset_sector_ref = iter.sector_ref;
+            let entryset_sector_index = iter.sector_index;
             let entryset_index = iter.index;
             let entry = iter.next().await?.unwrap();
             stream_extension = unsafe { mem::transmute(*entry) };
@@ -110,7 +110,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 name_length: cursor as u8,
                 file_directory,
                 stream_extension,
-                entry_ref: EntryRef::new(entryset_sector_ref, entryset_index as u8),
+                entry_index: EntryIndex::new(entryset_sector_index, entryset_index as u8),
             };
             if let Some(retval) = h(&entryset) {
                 return Ok(Some(retval));
@@ -162,20 +162,20 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
 
     /// Open a file or directory
     pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDirectory<E, IO>, Error<E>> {
-        trace!("Open {} on entry-ref {}", entryset.name(), entryset.entry_ref);
+        trace!("Open {} on entry-ref {}", entryset.name(), entryset.entry_index);
         let mut context = acquire!(self.meta.context);
         if !context.opened_entries.add(entryset.id(&self.meta.fs_info)) {
             return Err(OperationError::AlreadyOpen.into());
         }
         let cluster_id = entryset.stream_extension.first_cluster.to_ne();
         let file_attributes = entryset.file_directory.file_attributes();
-        let sector_ref = SectorRef::new(cluster_id.into(), 0);
+        let sector_index = SectorIndex::new(cluster_id.into(), 0);
         let meta = MetaFileDirectory {
             io: self.meta.io.clone(),
             context: self.meta.context.clone(),
             metadata: Metadata::new(entryset.clone()),
             options: FileOptions::default(),
-            sector_ref,
+            sector_index,
             ..self.meta
         };
         let (length, capacity) = (meta.metadata.length(), meta.metadata.capacity());
@@ -184,23 +184,23 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
             let upcase_table = self.upcase_table.clone();
             Ok(FileOrDirectory::Directory(Directory::new(meta, upcase_table)))
         } else {
-            Ok(FileOrDirectory::File(File::new(meta, sector_ref)))
+            Ok(FileOrDirectory::File(File::new(meta, sector_index)))
         }
     }
 
-    async fn lookup_free(&mut self, size: u8) -> Result<(EntryRef, bool), Error<E>> {
-        let mut best: Option<EntryRef> = None;
+    async fn lookup_free(&mut self, size: u8) -> Result<(EntryIndex, bool), Error<E>> {
+        let mut best: Option<EntryIndex> = None;
         let mut best_count = u8::MAX;
 
-        let mut candidate = EntryRef::default();
+        let mut candidate = EntryIndex::default();
         let mut free_count = 0;
 
-        let mut sector_ref = self.meta.sector_ref;
+        let mut sector_index = self.meta.sector_index;
         let mut skip = 0;
 
         loop {
             let mut io = acquire!(self.meta.io);
-            let sector = io.read(sector_ref.id(&self.meta.fs_info)).await?;
+            let sector = io.read(sector_index.id(&self.meta.fs_info)).await?;
             let entries: &[[RawEntry; 16]] = unsafe { mem::transmute(sector) };
             for (i, entry) in entries.iter().map(|e| e.iter()).flatten().enumerate() {
                 if skip > 0 {
@@ -210,10 +210,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 let entry_type: RawEntryType = entry[0].into();
                 if entry_type.is_end_of_directory() {
                     let tail = best.is_none();
-                    return Ok((best.unwrap_or(EntryRef::new(sector_ref, i as u8)), tail));
+                    return Ok((best.unwrap_or(EntryIndex::new(sector_index, i as u8)), tail));
                 }
                 match (free_count == 0, entry_type.in_use()) {
-                    (true, false) => candidate = EntryRef::new(sector_ref, i as u8),
+                    (true, false) => candidate = EntryIndex::new(sector_index, i as u8),
                     (false, false) => free_count += 1,
                     (false, true) => {
                         if free_count >= size && free_count < best_count {
@@ -237,7 +237,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
                 }
             }
             drop(io);
-            sector_ref = self.meta.next(sector_ref).await?;
+            sector_index = self.meta.next(sector_index).await?;
         }
     }
 
@@ -256,24 +256,24 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         }
 
         let num_entries = ((name.len() + 14) / 15) as u8 + 2;
-        let (free_entry_ref, tail) = self.lookup_free(num_entries).await?;
-        let mut write_entry_ref = free_entry_ref;
-        let sector_ref = free_entry_ref.sector_ref;
+        let (free_entry_index, tail) = self.lookup_free(num_entries).await?;
+        let mut write_entry_index = free_entry_index;
+        let sector_index = free_entry_index.sector_index;
         let sector_size = self.meta.fs_info.sector_size() as usize;
         let capacity = sector_size / ENTRY_SIZE;
-        let out_of_capacity = free_entry_ref.index + num_entries + tail as u8 >= capacity as u8;
+        let out_of_capacity = free_entry_index.index + num_entries + tail as u8 >= capacity as u8;
         if out_of_capacity {
-            let sector_ref = match self.meta.next(sector_ref).await {
-                Ok(sector_ref) => sector_ref,
+            let sector_index = match self.meta.next(sector_index).await {
+                Ok(sector_index) => sector_index,
                 Err(Error::Operation(OperationError::EOF)) => {
-                    SectorRef::new(self.meta.allocate(sector_ref.cluster_id).await?, 0)
+                    SectorIndex::new(self.meta.allocate(sector_index.cluster_id).await?, 0)
                 }
                 Err(e) => return Err(e),
             };
-            write_entry_ref = EntryRef::new(sector_ref, 0);
+            write_entry_index = EntryIndex::new(sector_index, 0);
         }
 
-        debug!("Write entryset at entry-ref {}", write_entry_ref);
+        debug!("Write entryset at entry-ref {}", write_entry_index);
 
         let hash = name_hash(&self.upcase_table.to_upper(name));
         let stream_extension = Secondary::new(StreamExtension::new(name.len() as u8, hash));
@@ -281,8 +281,8 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         let sum = checksum(&file_directory, &stream_extension, name);
         file_directory.set_checksum = sum.into();
 
-        let sector_id = write_entry_ref.sector_ref.id(&self.meta.fs_info);
-        let offset = write_entry_ref.index as usize * ENTRY_SIZE;
+        let sector_id = write_entry_index.sector_index.id(&self.meta.fs_info);
+        let offset = write_entry_index.index as usize * ENTRY_SIZE;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&file_directory) };
         let mut io = acquire!(self.meta.io);
         io.write(sector_id, offset, bytes).await?;
@@ -305,9 +305,9 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         };
         // Fill free entries afterwards to avoid corrupting metadata
         if out_of_capacity {
-            let sector_id = sector_ref.id(&self.meta.fs_info);
+            let sector_id = sector_index.id(&self.meta.fs_info);
             let byte: u8 = RawEntryType::new(EntryType::Filename, false).into();
-            for i in free_entry_ref.index as usize..(sector_size / ENTRY_SIZE) {
+            for i in free_entry_index.index as usize..(sector_size / ENTRY_SIZE) {
                 io.write(sector_id, i * ENTRY_SIZE, &[byte]).await?;
             }
         }
@@ -316,7 +316,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
 
     /// Delete a file or directory
     pub async fn delete(&mut self, entryset: &EntrySet) -> Result<(), Error<E>> {
-        debug!("Delete file or directory {} entry-ref {}", entryset.name(), entryset.entry_ref);
+        debug!("Delete file or directory {} entry-ref {}", entryset.name(), entryset.entry_index);
         let file_or_directory = self.open(entryset).await?;
         let meta = match file_or_directory {
             FileOrDirectory::Directory(mut directory) => {
@@ -331,16 +331,16 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> Directory<E, IO> {
         };
 
         let fs_info = self.meta.fs_info;
-        let mut sector_id = meta.entry_ref.sector_ref.id(&fs_info);
+        let mut sector_id = meta.entry_index.sector_index.id(&fs_info);
         let secondary_count = meta.file_directory.secondary_count as usize;
-        let last_index = meta.entry_ref.index as usize + secondary_count;
+        let last_index = meta.entry_index.index as usize + secondary_count;
         let sector_size = fs_info.sector_size() as usize;
         let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
-            true => self.meta.next(meta.entry_ref.sector_ref).await?.id(&fs_info),
+            true => self.meta.next(meta.entry_index.sector_index).await?.id(&fs_info),
             false => sector_id,
         };
 
-        let mut offset = meta.entry_ref.index as usize * ENTRY_SIZE;
+        let mut offset = meta.entry_index.index as usize * ENTRY_SIZE;
         let mut io = acquire!(self.meta.io);
         io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
         offset = (offset + ENTRY_SIZE) % sector_size;

@@ -1,6 +1,6 @@
 use alloc::string::{String, ToString};
 
-use super::entryset::{EntryRef, EntrySet};
+use super::entryset::{EntryIndex, EntrySet};
 use crate::region::data::entryset::checksum;
 use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
@@ -10,15 +10,15 @@ pub(crate) struct Metadata {
     pub name: String,
     pub file_directory: FileDirectory,
     pub stream_extension: Secondary<StreamExtension>,
-    pub entry_ref: EntryRef,
+    pub entry_index: EntryIndex,
     pub dirty: bool,
 }
 
 impl Metadata {
     pub fn new(entryset: EntrySet) -> Self {
         let name = entryset.name().to_string();
-        let EntrySet { file_directory, stream_extension, entry_ref, .. } = entryset;
-        Self { name, file_directory, stream_extension, entry_ref, dirty: false }
+        let EntrySet { file_directory, stream_extension, entry_index, .. } = entryset;
+        Self { name, file_directory, stream_extension, entry_index, dirty: false }
     }
 
     pub fn length(&self) -> u64 {

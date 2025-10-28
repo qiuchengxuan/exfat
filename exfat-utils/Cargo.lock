@@ -283,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "embedded-exfat"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "bitfield 0.19.3",
