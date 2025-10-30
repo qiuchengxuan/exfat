@@ -1,11 +1,12 @@
 use core::fmt::Debug;
+use core::ops::Deref;
 
 use super::meta::MetaFileDirectory;
 use crate::error::{Error, InputError, OperationError};
 use crate::file::{FileOptions, TouchOptions};
 use crate::fs::SectorIndex;
+use crate::io::{self, Block, Wrap};
 use crate::region::data::entryset::primary::DateTime;
-use crate::sync::acquire;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SeekFrom {
@@ -14,7 +15,7 @@ pub enum SeekFrom {
     Current(i64),
 }
 
-pub struct File<E: Debug, IO: crate::io::IO<Error = E>> {
+pub struct File<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> {
     pub(crate) meta: MetaFileDirectory<IO>,
     pub(crate) sector_index: SectorIndex,
     pub(crate) size: u64,
@@ -24,7 +25,7 @@ pub struct File<E: Debug, IO: crate::io::IO<Error = E>> {
     closed: bool,
 }
 
-impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> File<B, E, IO> {
     pub(crate) fn new(meta: MetaFileDirectory<IO>, sector_index: SectorIndex) -> Self {
         let size = meta.metadata.length();
         match () {
@@ -41,7 +42,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> File<B, E, IO> {
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -49,7 +50,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     /// Change file timestamp, will not take effect immediately untill flush or sync_all called
     pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
         self.meta.touch(datetime, opts).await?;
-        acquire!(self.meta.io).flush().await
+        self.meta.io.acquire().await.wrap().flush().await
     }
 
     /// Read some bytes
@@ -63,13 +64,13 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         if buf.len() > (self.size - self.cursor) as usize {
             buf = &mut buf[..(self.size - self.cursor) as usize];
         }
-        let sector_size = self.meta.fs_info.sector_size() as usize;
+        let sector_size = self.meta.fs.sector_size() as usize;
         let offset = self.cursor as usize % sector_size;
-        let sector_id = self.sector_index.id(&self.meta.fs_info);
+        let sector_id = self.sector_index.id(&self.meta.fs);
         let sector_remain = sector_size - offset;
-        let mut io = acquire!(self.meta.io);
+        let mut io = self.meta.io.acquire().await.wrap();
         let sector = io.read(sector_id).await?;
-        let bytes = crate::io::flatten(sector);
+        let bytes = crate::io::flatten(&*sector);
         if buf.len() <= sector_remain {
             buf.copy_from_slice(&bytes[offset..offset + buf.len()]);
             drop(io);
@@ -84,17 +85,17 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
         let mut remain = &mut buf[sector_remain..];
         self.sector_index = self.meta.next(self.sector_index).await?;
         for _ in 0..remain.len() / sector_size {
-            let mut io = acquire!(self.meta.io);
+            let mut io = self.meta.io.acquire().await.wrap();
             let sector = io.read(sector_id).await?;
-            let bytes = crate::io::flatten(sector);
+            let bytes = crate::io::flatten(&*sector);
             remain[..sector_size].copy_from_slice(bytes);
             drop(io);
             self.sector_index = self.meta.next(self.sector_index).await?;
             remain = &mut remain[sector_size..];
         }
-        let mut io = acquire!(self.meta.io);
+        let mut io = self.meta.io.acquire().await.wrap();
         let sector = io.read(sector_id).await?;
-        let bytes = crate::io::flatten(sector);
+        let bytes = crate::io::flatten(&*sector);
         remain.copy_from_slice(&bytes[..remain.len()]);
         self.cursor += buf.len() as u64;
         Ok(buf.len())
@@ -112,15 +113,15 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
             return Ok(0);
         }
         self.dirty = true;
-        let sector_size = self.meta.fs_info.sector_size() as usize;
+        let sector_size = self.meta.fs.sector_size() as usize;
         let mut capacity = self.meta.metadata.capacity();
         let sector_remain = (capacity - self.cursor) as usize % sector_size;
         if sector_remain > 0 {
             let length = core::cmp::min(bytes.len(), sector_remain);
             let chunk = &bytes[..length];
             trace!("Write to sector-ref {}", self.sector_index);
-            let sector_id = self.sector_index.id(&self.meta.fs_info);
-            let mut io = acquire!(self.meta.io);
+            let sector_id = self.sector_index.id(&self.meta.fs);
+            let mut io = self.meta.io.acquire().await.wrap();
             io.write(sector_id, self.cursor as usize % sector_size, chunk).await?;
             drop(io);
             self.cursor += length as u64;
@@ -136,10 +137,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
             capacity = self.meta.metadata.capacity();
         }
         trace!("Write to sector-ref {}", self.sector_index);
-        let sector_id = self.sector_index.id(&self.meta.fs_info);
+        let sector_id = self.sector_index.id(&self.meta.fs);
         let length = core::cmp::min(bytes.len(), sector_size);
         let chunk = &bytes[..length];
-        acquire!(self.meta.io).write(sector_id, 0, chunk).await?;
+        self.meta.io.acquire().await.wrap().write(sector_id, 0, chunk).await?;
         self.cursor += length as u64;
         self.size = core::cmp::max(self.cursor, self.size);
         if length == sector_size && self.cursor < capacity {
@@ -151,7 +152,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
 
     pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error<E>> {
         let written = self.write(bytes).await?; // Fill remain of current sector
-        for chunk in bytes[written..].chunks(self.meta.fs_info.sector_size() as usize) {
+        for chunk in bytes[written..].chunks(self.meta.fs.sector_size() as usize) {
             self.write(chunk).await?;
         }
         Ok(())
@@ -160,7 +161,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
     /// Flush data write operations
     pub async fn sync_data(&mut self) -> Result<(), Error<E>> {
         if self.dirty {
-            acquire!(self.meta.io).flush().await?;
+            self.meta.io.acquire().await.wrap().flush().await?;
             self.dirty = false;
         }
         Ok(())
@@ -189,7 +190,7 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
             return Err(InputError::SeekPosition.into());
         }
         let cursor = cursor as u64;
-        let sector_size = self.meta.fs_info.sector_size() as u64;
+        let sector_size = self.meta.fs.sector_size() as u64;
         let num_sectors = match () {
             _ if cursor > self.cursor => (cursor - self.cursor + sector_size - 1) / sector_size,
             _ if cursor < self.cursor => {
@@ -228,7 +229,10 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> File<E, IO> {
 }
 
 #[cfg(any(not(feature = "async"), feature = "std"))]
-impl<E: Debug, IO: crate::io::IO<Error = E>> Drop for File<E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO> Drop for File<B, E, IO>
+where
+    IO: io::IO<Block = B, Error = E>,
+{
     fn drop(&mut self) {
         #[cfg(feature = "async")]
         if !self.closed {

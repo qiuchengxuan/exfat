@@ -3,6 +3,10 @@ use derive_more::{Display, From, Into};
 #[derive(Copy, Clone, Debug, Default, Display, From, Into, Eq, Ord, PartialOrd, PartialEq)]
 pub struct SectorID(u64);
 
+impl SectorID {
+    pub(crate) const BOOT: Self = Self(0);
+}
+
 impl<I: Into<u64>> core::ops::Add<I> for SectorID {
     type Output = Self;
 

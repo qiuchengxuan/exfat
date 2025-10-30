@@ -1,6 +1,5 @@
-use std::mem::{MaybeUninit, transmute};
-
 use derive_more::Display;
+use exfat::io::{BLOCK_SIZE, Block};
 use exfat::types::SectorID;
 use mbr_nostd::{MasterBootRecord, PartitionTable};
 use sdmmc::SD;
@@ -16,41 +15,42 @@ pub struct SDMMC {
     offset: u32, // unit block
     num_blocks: u64,
     block_size_shift: u8,
-    sector_size_shift: u8,
     address: u32,
-    buffer: MaybeUninit<[u8; 4096]>,
+    buffer: heapless::Vec<Block, 4>,
     dirty: bool,
 }
 
 impl exfat::io::IO for SDMMC {
+    type Block = &'static [Block];
     type Error = BUSError<std::io::Error, IOError>;
 
     fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
         if !(self.block_size_shift <= shift && shift <= 12) {
             panic!("Sector size out of range")
         }
-        self.sector_size_shift = shift;
+        let length = 1 << (shift - self.block_size_shift);
+        unsafe { self.buffer.set_len(length) };
         Ok(())
     }
 
-    fn read<'a>(&'a mut self, id: SectorID) -> Result<&'a [exfat::io::Block], Self::Error> {
-        let length = 1 << (self.sector_size_shift - self.block_size_shift);
-        let address = u64::from(id) * length as u64;
+    fn read(&mut self, id: SectorID) -> Result<&'static [Block], Self::Error> {
+        let address = u64::from(id) * self.buffer.len() as u64;
         if address > self.num_blocks {
             panic!("Address out of range")
         }
-        if self.address != address as u32 && self.dirty {
+        if address as u32 == self.address {
+            return Ok(unsafe { &*core::ptr::from_ref(&self.buffer) });
+        }
+        if address as u32 != self.address && self.dirty {
             self.flush()?;
         }
         self.address = address as u32;
-        let buf: &mut [[u8; 512]; 8] = unsafe { transmute(self.buffer.assume_init_mut()) };
-        self.sd.read(self.offset + self.address, buf[..length].iter_mut())?;
-        Ok(&buf[..length])
+        self.sd.read(self.offset + self.address, self.buffer.iter_mut())?;
+        Ok(unsafe { &*core::ptr::from_ref(&self.buffer) })
     }
 
     fn write(&mut self, id: SectorID, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
-        let length = 1 << (self.sector_size_shift - self.block_size_shift);
-        let address = u64::from(id) * length as u64;
+        let address = u64::from(id) * self.buffer.len() as u64;
         if address > self.num_blocks {
             panic!("Address out of range")
         }
@@ -59,17 +59,15 @@ impl exfat::io::IO for SDMMC {
             self.read(id)?;
             self.address = address as u32;
         }
-        let sector = unsafe { self.buffer.assume_init_mut() };
-        sector[offset..offset + data.len()].copy_from_slice(data);
+        let chunk = &mut self.buffer[offset / BLOCK_SIZE];
+        let offset = offset % BLOCK_SIZE;
+        chunk[offset..offset + data.len()].copy_from_slice(data);
         Ok(())
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         if self.dirty {
-            let sector = unsafe { self.buffer.assume_init_mut() };
-            let blocks: &[[u8; 512]; 8] = unsafe { transmute(sector) };
-            let length = 1 << (self.sector_size_shift - self.block_size_shift);
-            self.sd.write(self.address, blocks[..length].iter())?;
+            self.sd.write(self.address, self.buffer.iter())?;
             self.dirty = false;
         }
         Ok(())
@@ -100,14 +98,15 @@ impl SDMMC {
         let offset = 0;
         let block_size_shift = sd.block_size_shift();
         let num_blocks: u64 = sd.num_blocks().into();
+        let mut buffer = heapless::Vec::new();
+        unsafe { buffer.set_len(4) };
         let sdmmc = Self {
             sd,
             offset,
             num_blocks,
             block_size_shift,
-            sector_size_shift: 9,
             address: u32::MAX,
-            buffer: MaybeUninit::uninit(),
+            buffer,
             dirty: false,
         };
         Ok(sdmmc)

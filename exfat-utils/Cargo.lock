@@ -349,6 +349,7 @@ dependencies = [
  "embedded-exfat",
  "embedded-hal",
  "env_logger",
+ "heapless",
  "log",
  "mbr-nostd",
  "pretty-hex",

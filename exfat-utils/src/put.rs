@@ -1,17 +1,20 @@
 use std::fs::File;
 use std::io::Read;
+use std::ops::Deref;
 
 use exfat::error::{Error, OperationError};
+use exfat::io::Block;
 use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use crate::filepath::open;
 
-pub fn put<E, IO>(root: &mut Root<E, IO>, mut path: &str, source: &str) -> Result<(), Error<E>>
+pub fn put<B, E, IO>(root: &mut Root<B, E, IO>, path: &str, source: &str) -> Result<(), Error<E>>
 where
+    B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Error = E>,
+    IO: exfat::io::IO<Block = B, Error = E>,
 {
-    path = path.trim_end_matches('/');
+    let path = path.trim_end_matches('/');
     let (mut directory, name) = match path.rsplit_once('/') {
         Some((base, name)) => match open(root.open()?, &base)? {
             FileOrDirectory::File(_) => return Err(OperationError::NotDirectory.into()),
