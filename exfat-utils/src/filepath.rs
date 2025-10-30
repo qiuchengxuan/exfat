@@ -1,13 +1,17 @@
-use exfat::error::{Error, OperationError};
+use std::ops::Deref;
+
 use exfat::Directory as Dir;
 use exfat::FileOrDirectory as FileOrDir;
+use exfat::error::{Error, OperationError};
+use exfat::io::Block;
 
 const NOT_FOUND: OperationError = OperationError::NotFound;
 
-pub fn open<E, IO>(mut dir: Dir<E, IO>, path: &str) -> Result<FileOrDir<E, IO>, Error<E>>
+pub fn open<B, E, IO>(mut dir: Dir<B, E, IO>, path: &str) -> Result<FileOrDir<B, E, IO>, Error<E>>
 where
+    B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Error = E>,
+    IO: exfat::io::IO<Block = B, Error = E>,
 {
     let path = path.trim().trim_matches('/');
     if path == "" {

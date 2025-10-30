@@ -1,6 +1,7 @@
 use std::mem::{MaybeUninit, transmute};
 
 use derive_more::Display;
+use exfat::io::Block;
 use exfat::types::SectorID;
 use mbr_nostd::{MasterBootRecord, PartitionTable};
 use sdmmc::SD;
@@ -23,6 +24,7 @@ pub struct SDMMC {
 }
 
 impl exfat::io::IO for SDMMC {
+    type Block = Vec<Block>;
     type Error = BUSError<std::io::Error, IOError>;
 
     fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
@@ -33,19 +35,15 @@ impl exfat::io::IO for SDMMC {
         Ok(())
     }
 
-    fn read<'a>(&'a mut self, id: SectorID) -> Result<&'a [exfat::io::Block], Self::Error> {
+    fn read(&mut self, id: SectorID) -> Result<Vec<Block>, Self::Error> {
         let length = 1 << (self.sector_size_shift - self.block_size_shift);
         let address = u64::from(id) * length as u64;
         if address > self.num_blocks {
             panic!("Address out of range")
         }
-        if self.address != address as u32 && self.dirty {
-            self.flush()?;
-        }
-        self.address = address as u32;
-        let buf: &mut [[u8; 512]; 8] = unsafe { transmute(self.buffer.assume_init_mut()) };
-        self.sd.read(self.offset + self.address, buf[..length].iter_mut())?;
-        Ok(&buf[..length])
+        let mut buf = Vec::with_capacity(length);
+        self.sd.read(self.offset + address as u32, buf.iter_mut())?;
+        Ok(buf)
     }
 
     fn write(&mut self, id: SectorID, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
