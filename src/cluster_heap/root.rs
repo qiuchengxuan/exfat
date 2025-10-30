@@ -63,16 +63,16 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
         }
         drop(borrow_io);
 
-        let upcase_table = upcase_table.ok_or(Error::Data(DataError::UpcaseTableMissing))?;
+        let upcase_table = upcase_table.ok_or(DataError::UpcaseTableMissing)?;
         let context = {
-            let region =
-                allocation_bitmap.ok_or(Error::Data(DataError::AllocationBitmapMissing))?;
+            let region = allocation_bitmap.ok_or(DataError::AllocationBitmapMissing)?;
             let first_cluster = region.first_cluster.to_ne();
             let sector_offset = (first_cluster - 2) * fs_info.sectors_per_cluster();
             let base = SectorID::from((fs_info.heap_offset + sector_offset) as u64);
-            let length = region.data_length.to_ne() as u32;
-            debug!("Allocation bitmap found at cluster {} length {}", first_cluster, length);
-            let bitmap = AllocationBitmap::new(io.clone(), base, fat_info, length).await?;
+            let size = region.data_length.to_ne() as u32;
+            debug!("Allocation bitmap found at cluster {} length {}", first_cluster, size);
+            let meta = super::allocation_bitmap::Meta::new(io.clone(), size).await?;
+            let bitmap = AllocationBitmap::new(io.clone(), base, fat_info, meta);
             shared(Context {
                 allocation_bitmap: bitmap,
                 opened_entries: OpenedEntries { entries: Vec::with_capacity(4) },
@@ -93,6 +93,11 @@ impl<E: Debug, IO: crate::io::IO<Error = E>> RootDirectory<E, IO> {
             MetaFileDirectory { io, context, fat_info, fs_info, metadata, options, sector_index };
         let directory = Directory::new(meta, upcase_table_data);
         Ok(Self { directory, upcase_table, volumn_label })
+    }
+
+    /// Traversing allocation bitmap and gather precise usage info
+    pub async fn update_usage(&mut self) -> Result<(), Error<E>> {
+        self.directory.meta.context.borrow_mut().allocation_bitmap.update_usage().await
     }
 
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {

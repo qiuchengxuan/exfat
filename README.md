@@ -63,18 +63,12 @@ Features
   Link an external `exfat_datetime_now` function to get current datetime,
   If not enabled, a default datetime will be used.
 
-* **log-max-level-off**
+* **logging**
 
-  Disable logging at compile time
+  Enable logging, otherwise disabled at compile time
 
 * **max-filename-size-30**
 
   Limit filename size to 30 bytes to reduce stack cost,
   any file or directory name longer than this size will be ignored,
   creating file with name size exceeds will return error.
-
-* **precise-allocation-counter** (enable by default)
-
-  Count exact cluster allocation size to maintain precise disk usage,
-  needs to scan whole allocation bitmap and slows down initiation.
-  If not enabled, disk usage calculation pretends to be more than actual.

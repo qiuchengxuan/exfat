@@ -21,7 +21,6 @@ impl<I: Into<u64>> core::ops::AddAssign<I> for SectorID {
 pub struct ClusterID(u32);
 
 impl ClusterID {
-    pub(crate) const INVALID: Self = Self(0);
     pub(crate) const FIRST: Self = Self(2);
 
     pub fn valid(&self) -> bool {

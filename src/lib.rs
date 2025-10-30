@@ -9,8 +9,26 @@ extern crate alloc;
 #[macro_use]
 extern crate hex_literal;
 extern crate heapless;
+#[cfg(feature = "logging")]
 #[macro_use]
 extern crate log;
+
+#[cfg(not(feature = "logging"))]
+#[macro_use]
+mod logging {
+    #[macro_export]
+    macro_rules! warn {
+        ($($arg:tt)*) => { _ = ($($arg)*) };
+    }
+    #[macro_export]
+    macro_rules! debug {
+        ($($arg:tt)*) => { _ = ($($arg)*) };
+    }
+    #[macro_export]
+    macro_rules! trace {
+        ($($arg:tt)*) => { _ = ($($arg)*) };
+    }
+}
 
 mod cluster_heap;
 mod endian;
@@ -32,6 +50,7 @@ use memoffset::offset_of;
 pub use cluster_heap::directory::{Directory, FileOrDirectory};
 pub use cluster_heap::file::SeekFrom;
 pub use cluster_heap::root::RootDirectory;
+use cluster_heap::root::RootDirectory as Root;
 use error::{DataError, Error, ImplementationError};
 use io::IOWrapper;
 pub use region::data::entryset::primary::DateTime;
@@ -128,9 +147,11 @@ impl<E: Debug, IO: io::IO<Error = E>> ExFAT<IO> {
         self.serial_number
     }
 
-    pub async fn root_directory(&mut self) -> Result<RootDirectory<E, IO>, Error<E>> {
-        let io = self.io.clone();
-        RootDirectory::new(io, self.fat_info, self.fs_info, self.root).await
+    /// Cluster usage is calculated by default, which is inaccurate, therefore you may encounter
+    /// false allocation failure when still some clusters available.
+    /// For precise cluster usage calculation, you may call `update_usage` which will cost some time.
+    pub async fn root_directory(&mut self) -> Result<Root<E, IO>, Error<E>> {
+        Root::new(self.io.clone(), self.fat_info, self.fs_info, self.root).await
     }
 
     pub fn try_free(self) -> Result<IO, Self> {

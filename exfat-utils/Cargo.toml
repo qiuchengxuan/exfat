@@ -6,7 +6,7 @@ edition = "2021"
 repository = "https://github.com/qiuchengxuan/exfat"
 
 [dependencies]
-async-embedded-sdmmc = { version = "0.2", default-features = false, features = ["linux-spi"] }
+async-embedded-sdmmc = { version = "0.2", default-features = false, features = ["logging", "linux-spi"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 derive_more = "2.0.1"

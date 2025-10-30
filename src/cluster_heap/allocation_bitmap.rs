@@ -34,11 +34,27 @@ fn bit_to_offset(bit: u8) -> u8 {
 }
 
 #[derive(Copy, Clone)]
-struct Meta {
+pub(crate) struct Meta {
     size: u32,
     num_clusters: u32,
     sector_size_shift: u8,
     percent_inuse: u8,
+}
+
+impl Meta {
+    #[cfg_attr(not(feature = "async"), deasync::deasync)]
+    pub(crate) async fn new<E, IO>(io: Shared<IOWrapper<IO>>, size: u32) -> Result<Self, Error<E>>
+    where
+        IO: crate::io::IO<Error = E>,
+    {
+        let mut io = acquire!(io);
+        let blocks = io.read(0.into()).await?;
+        let boot_sector: &BootSector = unsafe { transmute(&blocks[0]) };
+        let sector_size_shift = boot_sector.bytes_per_sector_shift;
+        let num_clusters = boot_sector.cluster_count.to_ne();
+        let percent_inuse = boot_sector.percent_inuse;
+        Ok(Self { size, num_clusters, sector_size_shift, percent_inuse })
+    }
 }
 
 #[derive(Clone)]
@@ -63,7 +79,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         self.meta.size / self.sector_size()
     }
 
-    async fn init(&mut self) -> Result<(), Error<E>> {
+    pub(crate) async fn update_usage(&mut self) -> Result<(), Error<E>> {
         let sector_size = self.sector_size();
         let mut num_inuse = 0;
         let mut io = acquire!(self.io);
@@ -81,7 +97,6 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
             }
         }
         self.num_inuse = num_inuse;
-        debug!("Clusters stats: {}/{}", num_inuse, self.meta.num_clusters);
         Ok(())
     }
 
@@ -89,24 +104,11 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         io: Shared<IOWrapper<IO>>,
         base: SectorID,
         fat: FAT,
-        size: u32,
-    ) -> Result<Self, Error<E>> {
-        let mut borrow_io = acquire!(io);
-        let blocks = borrow_io.read(0.into()).await?;
-        let boot_sector: &BootSector = unsafe { transmute(&blocks[0]) };
-        let sector_size_shift = boot_sector.bytes_per_sector_shift;
-        let num_clusters = boot_sector.cluster_count.to_ne();
-        let percent_inuse = boot_sector.percent_inuse;
-        drop(borrow_io);
-
-        let meta = Meta { size, num_clusters, sector_size_shift, percent_inuse };
-        let num_inuse = ((percent_inuse + 1) as u64 * num_clusters as u64 / 100) as u32 - 1;
-        let mut bitmap = Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse };
-        if cfg!(feature = "precise-allocation-counter") {
-            bitmap.cursor = ClusterID::INVALID;
-            bitmap.init().await?;
-        }
-        Ok(bitmap)
+        meta: Meta,
+    ) -> Self {
+        let num_inuse =
+            ((meta.percent_inuse + 1) as u64 * meta.num_clusters as u64 / 100) as u32 - 1;
+        Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse }
     }
 
     async fn is_available(&mut self, cluster_id: ClusterID) -> Result<Option<u8>, Error<E>> {
