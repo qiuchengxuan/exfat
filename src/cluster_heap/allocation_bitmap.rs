@@ -1,35 +1,35 @@
 use core::mem::{size_of, transmute};
+use core::ops::{BitXor, Deref, Sub};
 
 use memoffset::offset_of;
 
 use crate::error::{AllocationError, DataError, Error};
 use crate::fat::Info as FAT;
-use crate::io::{BLOCK_SIZE, IOWrapper};
+use crate::io::{self, BLOCK_SIZE, Block, Wrap};
 use crate::region::boot::BootSector;
 use crate::region::fat::Entry;
-use crate::sync::{Shared, acquire};
+use crate::sync::Shared;
 use crate::types::{ClusterID, SectorID};
 
 const BITMAP_SIZE: usize = BLOCK_SIZE / size_of::<usize>();
 
 #[inline]
-fn first_zero_bit(bits: u8) -> u8 {
-    let bits = !bits;
-    ((bits - 1) ^ bits) & bits
+fn lsb<T: Copy + From<u8> + Sub<T, Output = T> + BitXor<T, Output = T>>(bits: T) -> T {
+    (bits - T::from(1)) ^ bits
 }
 
 #[inline]
 fn bit_to_offset(bit: u8) -> u8 {
     match bit {
-        0b00000001 => return 0,
-        0b00000010 => return 1,
-        0b00000100 => return 2,
-        0b00001000 => return 3,
-        0b00010000 => return 4,
-        0b00100000 => return 5,
-        0b01000000 => return 6,
-        0b10000000 => return 7,
-        _ => panic!("Not a single bit or is zero"),
+        0b00000001 => 0,
+        0b00000010 => 1,
+        0b00000100 => 2,
+        0b00001000 => 3,
+        0b00010000 => 4,
+        0b00100000 => 5,
+        0b01000000 => 6,
+        0b10000000 => 7,
+        _ => unreachable!("Not a single bit or is zero"),
     }
 }
 
@@ -43,13 +43,14 @@ pub(crate) struct Meta {
 
 impl Meta {
     #[cfg_attr(not(feature = "async"), deasync::deasync)]
-    pub(crate) async fn new<E, IO>(io: Shared<IOWrapper<IO>>, size: u32) -> Result<Self, Error<E>>
+    pub(crate) async fn new<B, E, IO>(io: Shared<IO>, size: u32) -> Result<Self, Error<E>>
     where
-        IO: crate::io::IO<Error = E>,
+        B: Deref<Target = [Block]>,
+        IO: io::IO<Block = B, Error = E>,
     {
-        let mut io = acquire!(io);
-        let blocks = io.read(0.into()).await?;
-        let boot_sector: &BootSector = unsafe { transmute(&blocks[0]) };
+        let mut io = io.acquire().await.wrap();
+        let block = io.read(SectorID::BOOT).await?;
+        let boot_sector: &BootSector = unsafe { transmute(&block[0]) };
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let num_clusters = boot_sector.cluster_count.to_ne();
         let percent_inuse = boot_sector.percent_inuse;
@@ -59,7 +60,7 @@ impl Meta {
 
 #[derive(Clone)]
 pub struct DumbAllocator<IO> {
-    io: Shared<IOWrapper<IO>>,
+    io: Shared<IO>,
     base: SectorID,
     fat: FAT,
     cursor: ClusterID,
@@ -68,7 +69,7 @@ pub struct DumbAllocator<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
+impl<B: Deref<Target = [Block]>, E, IO: io::IO<Block = B, Error = E>> DumbAllocator<IO> {
     #[inline]
     fn sector_size(&self) -> u32 {
         1 << self.meta.sector_size_shift
@@ -82,11 +83,11 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     pub(crate) async fn update_usage(&mut self) -> Result<(), Error<E>> {
         let sector_size = self.sector_size();
         let mut num_inuse = 0;
-        let mut io = acquire!(self.io);
+        let mut io = self.io.acquire().await.wrap();
         for sector_offset in 0..self.num_sectors() {
             let sector_id = self.base + sector_offset;
-            let sector = io.read(sector_id).await?;
-            let blocks: &[[usize; BITMAP_SIZE]] = unsafe { transmute(sector) };
+            let block = io.read(sector_id).await?;
+            let blocks: &[[usize; BITMAP_SIZE]] = unsafe { transmute(&*block) };
             for i in 0..(sector_size as usize / BLOCK_SIZE) {
                 let sum = blocks[i].iter().map(|bits| bits.count_ones()).sum::<u32>();
                 if !self.cursor.valid() && sum < sector_size {
@@ -100,12 +101,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         Ok(())
     }
 
-    pub(crate) async fn new(
-        io: Shared<IOWrapper<IO>>,
-        base: SectorID,
-        fat: FAT,
-        meta: Meta,
-    ) -> Self {
+    pub(crate) async fn new(io: Shared<IO>, base: SectorID, fat: FAT, meta: Meta) -> Self {
         let num_inuse =
             ((meta.percent_inuse + 1) as u64 * meta.num_clusters as u64 / 100) as u32 - 1;
         Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse }
@@ -119,7 +115,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         }
         let sector_size = 1 << self.meta.sector_size_shift;
         let sector_id = self.base + offset / 8 / sector_size;
-        let mut io = acquire!(self.io);
+        let mut io = self.io.acquire().await.wrap();
         let sector = io.read(sector_id).await?;
         let index = (byte_offset % sector_size) as usize;
         let bits = sector[index / 512][index % 512];
@@ -127,7 +123,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
     }
 
     async fn find_available(&mut self) -> Result<(u32, u8), Error<E>> {
-        let mut io = acquire!(self.io);
+        let mut io = self.io.acquire().await.wrap();
         let sector_size = 1 << self.meta.sector_size_shift;
         let mut sector_id = self.base + self.cursor.offset() / sector_size;
         let mut sector = io.read(sector_id).await?;
@@ -157,7 +153,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         }
         self.meta.percent_inuse = percent_inuse as u8;
         let bytes: [u8; 1] = [self.meta.percent_inuse];
-        acquire!(self.io).write(0.into(), offset, &bytes).await
+        self.io.acquire().await.wrap().write(SectorID::BOOT, offset, &bytes).await
     }
 
     pub async fn allocate(&mut self, nofrag: Option<ClusterID>) -> Result<ClusterID, Error<E>> {
@@ -175,13 +171,13 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         }
         if bits == 0xFF {
             let (byte_offset, bits) = self.find_available().await?;
-            cursor = ClusterID::FIRST + byte_offset * 8 + bit_to_offset(first_zero_bit(bits));
+            cursor = ClusterID::FIRST + byte_offset * 8 + bit_to_offset(lsb(!bits));
         };
         let offset = cursor.offset();
         let sector_id = self.base + offset / sector_size;
         let offset = (offset / 8) % sector_size;
         bits |= 1 << (offset % 8);
-        acquire!(self.io).write(sector_id, offset as usize, &[bits; 1]).await?;
+        self.io.acquire().await.wrap().write(sector_id, offset as usize, &[bits; 1]).await?;
         self.num_inuse += 1;
         self.cursor = cursor + (bits == 0xFF) as u32;
         self.ensure_percent_inuse().await?;
@@ -197,7 +193,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
             warn!("Cluster ID {} out of range", cluster_id);
             return Err(DataError::FATChain.into());
         }
-        let mut io = acquire!(self.io);
+        let mut io = self.io.acquire().await.wrap();
         let sector_size = 1 << self.meta.sector_size_shift;
         let sector_offset = byte_offset / sector_size;
         let sector_id = self.base + sector_offset;
@@ -214,7 +210,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
         if !chain {
             self.release_one(cluster_id).await?;
             self.ensure_percent_inuse().await?;
-            return acquire!(self.io).flush().await;
+            return self.io.acquire().await.wrap().flush().await;
         }
         let mut cluster_id = cluster_id;
         while cluster_id.valid() {
@@ -224,9 +220,9 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
                 Some(id) => id,
                 None => return Ok(()),
             };
-            let mut io = acquire!(self.io);
+            let mut io = self.io.acquire().await.wrap();
             let sector = io.read(sector_id).await?;
-            let entry = match self.fat.next_cluster_id(sector, cluster_id) {
+            let entry = match self.fat.next_cluster_id(&sector, cluster_id) {
                 Ok(entry) => entry,
                 Err(value) => {
                     warn!("Invalid next entry {:X} for cluster id {}", value, cluster_id);
@@ -243,7 +239,7 @@ impl<E, IO: crate::io::IO<Error = E>> DumbAllocator<IO> {
             }
         }
         self.ensure_percent_inuse().await?;
-        let mut io = acquire!(self.io);
+        let mut io = self.io.acquire().await.wrap();
         return io.flush().await;
     }
 }

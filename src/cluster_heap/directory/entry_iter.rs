@@ -1,12 +1,13 @@
 use core::fmt::Debug;
 use core::mem;
+use core::ops::Deref;
 
 use super::super::meta::MetaFileDirectory;
 use crate::error::Error;
 use crate::fs::SectorIndex;
+use crate::io::{self, Block, Wrap};
 use crate::region::data::entry_type::RawEntryType;
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
-use crate::sync::acquire;
 
 pub(crate) struct EntryIter<'a, IO> {
     meta: &'a mut MetaFileDirectory<IO>,
@@ -16,27 +17,27 @@ pub(crate) struct EntryIter<'a, IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<'a, E: Debug, IO: crate::io::IO<Error = E>> EntryIter<'a, IO> {
+impl<'a, B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> EntryIter<'a, IO> {
     pub(crate) async fn new(
         meta: &'a mut MetaFileDirectory<IO>,
     ) -> Result<EntryIter<'a, IO>, Error<E>> {
         let sector_index = meta.sector_index;
-        let mut io = acquire!(meta.io);
-        let sector = io.read(sector_index.id(&meta.fs_info)).await?;
-        let entries = unsafe { mem::transmute(sector) };
+        let mut io = meta.io.acquire().await.wrap();
+        let sector = io.read(sector_index.id(&meta.fs)).await?;
+        let entries = unsafe { mem::transmute(&*sector) };
         drop(io);
         Ok(Self { meta, entries, sector_index, index: u8::MAX })
     }
 
     pub(crate) async fn skip(&mut self, num_entries: u8) -> Result<(), Error<E>> {
         self.index = self.index.wrapping_add(num_entries);
-        let sector_size = self.meta.fs_info.sector_size() as usize;
+        let sector_size = self.meta.fs.sector_size() as usize;
         if (self.index as usize * ENTRY_SIZE) >= sector_size {
             self.index -= (sector_size / ENTRY_SIZE) as u8;
             self.sector_index = self.meta.next(self.sector_index).await?;
-            let mut io = acquire!(self.meta.io);
-            let sector = io.read(self.sector_index.id(&self.meta.fs_info)).await?;
-            self.entries = unsafe { mem::transmute(sector) };
+            let mut io = self.meta.io.acquire().await.wrap();
+            let sector = io.read(self.sector_index.id(&self.meta.fs)).await?;
+            self.entries = unsafe { mem::transmute(&*sector) };
         }
         Ok(())
     }
