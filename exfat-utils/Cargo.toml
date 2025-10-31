@@ -10,7 +10,7 @@ async-embedded-sdmmc = { version = "0.2", default-features = false, features = [
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 derive_more = "2.0.1"
-embedded-exfat = { path = "..", features = ["chrono", "extern-datetime-now"] }
+embedded-exfat = { path = "..", features = ["std", "chrono", "extern-datetime-now"] }
 embedded-hal = "1.0"
 env_logger = "0.11"
 log = "0.4"

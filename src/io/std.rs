@@ -1,5 +1,5 @@
-use std::mem::MaybeUninit;
-use std::slice::from_raw_parts;
+use core::mem::MaybeUninit;
+use core::mem::transmute;
 
 use std::io::SeekFrom;
 use std::path::Path;
@@ -18,15 +18,13 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 #[cfg(feature = "async")]
 use async_trait::async_trait;
 
+use super::{BLOCK_SIZE, Block};
 use crate::types::SectorID;
-
-const MAX_SECTOR_SIZE: usize = 4096;
 
 #[derive(Debug)]
 pub struct FileIO {
     file: fs::File,
     sector_size_shift: u8,
-    buffer: MaybeUninit<[u8; MAX_SECTOR_SIZE]>,
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
@@ -39,13 +37,14 @@ impl FileIO {
             () => fs::File::options(),
         };
         let file = options.read(true).write(true).open(filepath).await?;
-        Ok(Self { file, sector_size_shift: 9, buffer: MaybeUninit::uninit() })
+        Ok(Self { file, sector_size_shift: 9 })
     }
 }
 
 #[cfg_attr(feature = "async", async_trait)]
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl super::IO for FileIO {
+    type Block = heapless::Vec<Block, 8>;
     type Error = std::io::Error;
 
     fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
@@ -53,15 +52,18 @@ impl super::IO for FileIO {
         Ok(())
     }
 
-    async fn read<'a>(&'a mut self, sector: SectorID) -> Result<&'a [[u8; 512]], Self::Error> {
+    async fn read<'a>(&'a mut self, sector: SectorID) -> Result<Self::Block, Self::Error> {
         let sector_size: usize = 1 << self.sector_size_shift;
         let seek = SeekFrom::Start(u64::from(sector) * sector_size as u64);
 
         self.file.seek(seek).await?;
-        let buffer = unsafe { self.buffer.assume_init_mut() };
+        let block = MaybeUninit::<[u8; 4096]>::uninit();
+        let mut buffer = unsafe { block.assume_init() };
         self.file.read_exact(&mut buffer[..sector_size]).await?;
-
-        Ok(unsafe { from_raw_parts(buffer.as_ptr() as *const _, sector_size / 512) })
+        let array: [Block; 8] = unsafe { transmute(block.assume_init()) };
+        let mut retval = heapless::Vec::<Block, 8>::from_array(array);
+        retval.truncate(sector_size / BLOCK_SIZE);
+        Ok(retval)
     }
 
     async fn write(
