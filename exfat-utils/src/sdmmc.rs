@@ -21,7 +21,7 @@ pub struct SDMMC {
 }
 
 impl exfat::io::IO for SDMMC {
-    type Block = &'static [Block];
+    type Block<'a> = &'a [Block];
     type Error = BUSError<std::io::Error, IOError>;
 
     fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
@@ -33,7 +33,7 @@ impl exfat::io::IO for SDMMC {
         Ok(())
     }
 
-    fn read(&mut self, id: SectorID) -> Result<&'static [Block], Self::Error> {
+    fn read<'a>(&mut self, id: SectorID) -> Result<&'a [Block], Self::Error> {
         let address = u64::from(id) * self.buffer.len() as u64;
         if address > self.num_blocks {
             panic!("Address out of range")

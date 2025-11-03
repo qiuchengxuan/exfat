@@ -11,7 +11,7 @@ pub fn open<B, E, IO>(mut dir: Dir<B, E, IO>, path: &str) -> Result<FileOrDir<B,
 where
     B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Block = B, Error = E>,
+    IO: exfat::io::IO<Block<'static> = B, Error = E>,
 {
     let path = path.trim().trim_matches('/');
     if path == "" {

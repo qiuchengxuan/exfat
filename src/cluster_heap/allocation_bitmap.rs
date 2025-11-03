@@ -46,7 +46,7 @@ impl Meta {
     pub(crate) async fn new<B, E, IO>(io: Shared<IO>, size: u32) -> Result<Self, Error<E>>
     where
         B: Deref<Target = [Block]>,
-        IO: io::IO<Block = B, Error = E>,
+        IO: io::IO<Block<'static> = B, Error = E>,
     {
         let mut io = io.acquire().await.wrap();
         let blocks = io.read(SectorID::BOOT).await?;
@@ -69,7 +69,10 @@ pub struct DumbAllocator<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<B: Deref<Target = [Block]>, E, IO: io::IO<Block = B, Error = E>> DumbAllocator<IO> {
+impl<B: Deref<Target = [Block]>, E, IO> DumbAllocator<IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     #[inline]
     fn sector_size(&self) -> u32 {
         1 << self.meta.sector_size_shift

@@ -15,7 +15,10 @@ pub enum SeekFrom {
     Current(i64),
 }
 
-pub struct File<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> {
+pub struct File<B: Deref<Target = [Block]>, E: Debug, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub(crate) meta: MetaFileDirectory<IO>,
     pub(crate) sector_index: SectorIndex,
     pub(crate) size: u64,
@@ -25,7 +28,10 @@ pub struct File<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Erro
     closed: bool,
 }
 
-impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> File<B, E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO> File<B, E, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub(crate) fn new(meta: MetaFileDirectory<IO>, sector_index: SectorIndex) -> Self {
         let size = meta.metadata.length();
         match () {
@@ -42,7 +48,10 @@ impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> Fil
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> File<B, E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO> File<B, E, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -231,7 +240,7 @@ impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> Fil
 #[cfg(any(not(feature = "async"), feature = "std"))]
 impl<B: Deref<Target = [Block]>, E: Debug, IO> Drop for File<B, E, IO>
 where
-    IO: io::IO<Block = B, Error = E>,
+    IO: io::IO<Block<'static> = B, Error = E>,
 {
     fn drop(&mut self) {
         #[cfg(feature = "async")]

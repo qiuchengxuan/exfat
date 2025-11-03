@@ -10,7 +10,7 @@ pub fn touch<B, E, IO>(root: &mut Root<B, E, IO>, path: &str) -> Result<(), Erro
 where
     B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Block = B, Error = E>,
+    IO: exfat::io::IO<Block<'static> = B, Error = E>,
 {
     let now = chrono::Utc::now();
     let directory = root.open()?;

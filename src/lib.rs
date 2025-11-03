@@ -70,7 +70,10 @@ pub struct ExFAT<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> ExFAT<IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO> ExFAT<IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub async fn new(mut io: IO) -> Result<Self, Error<E>> {
         let block = io.wrap().read(SectorID::BOOT).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&block[0]) };

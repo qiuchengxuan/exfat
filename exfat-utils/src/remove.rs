@@ -10,7 +10,7 @@ pub fn remove<B, E, IO>(root: &mut Root<B, E, IO>, mut path: &str) -> Result<(),
 where
     B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Block = B, Error = E>,
+    IO: exfat::io::IO<Block<'static> = B, Error = E>,
 {
     path = path.trim_end_matches('/');
     let (mut directory, name) = match path.rsplit_once('/') {

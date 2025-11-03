@@ -105,7 +105,7 @@ struct Args {
     action: Action,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn exfat_datetime_now() -> DateTime {
     let now = chrono::Utc::now();
     now.into()

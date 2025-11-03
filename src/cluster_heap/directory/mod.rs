@@ -23,14 +23,20 @@ use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
 use entry_iter::EntryIter;
 
-pub struct Directory<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> {
+pub struct Directory<B: Deref<Target = [Block]>, E: Debug, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub(crate) meta: MetaFileDirectory<IO>,
     pub(crate) upcase_table: Rc<UpcaseTable>,
     #[cfg(feature = "async")]
     closed: bool,
 }
 
-impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> Directory<B, E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO> Directory<B, E, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub(crate) fn new(meta: MetaFileDirectory<IO>, upcase_table: Rc<UpcaseTable>) -> Self {
         match () {
             #[cfg(not(feature = "async"))]
@@ -41,7 +47,10 @@ impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> Dir
     }
 }
 
-pub enum FileOrDirectory<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> {
+pub enum FileOrDirectory<B: Deref<Target = [Block]>, E: Debug, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     File(File<B, E, IO>),
     Directory(Directory<B, E, IO>),
 }
@@ -49,7 +58,10 @@ pub enum FileOrDirectory<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block 
 type FileOrDir<B, E, IO> = FileOrDirectory<B, E, IO>;
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> Directory<B, E, IO> {
+impl<B: Deref<Target = [Block]>, E: Debug, IO> Directory<B, E, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     async fn walk_matches<F, H, R>(&mut self, f: F, mut h: H) -> Result<Option<R>, Error<E>>
     where
         F: Fn(&FileDirectory, &Secondary<StreamExtension>) -> bool,
@@ -380,7 +392,7 @@ impl<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> Dir
 
 impl<B: Deref<Target = [Block]>, E: Debug, IO> Drop for Directory<B, E, IO>
 where
-    IO: io::IO<Block = B, Error = E>,
+    IO: io::IO<Block<'static> = B, Error = E>,
 {
     fn drop(&mut self) {
         #[cfg(feature = "async")]

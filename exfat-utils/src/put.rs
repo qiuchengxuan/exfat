@@ -12,7 +12,7 @@ pub fn put<B, E, IO>(root: &mut Root<B, E, IO>, path: &str, source: &str) -> Res
 where
     B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Block = B, Error = E>,
+    IO: exfat::io::IO<Block<'static> = B, Error = E>,
 {
     let path = path.trim_end_matches('/');
     let (mut directory, name) = match path.rsplit_once('/') {

@@ -12,7 +12,7 @@ pub fn append<B, E, IO>(root: &mut Root<B, E, IO>, path: &str, source: &str) -> 
 where
     B: Deref<Target = [Block]>,
     E: std::fmt::Debug,
-    IO: exfat::io::IO<Block = B, Error = E>,
+    IO: exfat::io::IO<Block<'static> = B, Error = E>,
 {
     let mut source_file = File::open(&source).expect("No such file");
     let mut buffer = [0u8; 4096];

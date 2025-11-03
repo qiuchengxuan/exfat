@@ -24,7 +24,10 @@ use crate::region::data::entryset::RawEntry;
 use crate::sync::Shared;
 use crate::types::{ClusterID, SectorID};
 
-pub struct RootDirectory<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> {
+pub struct RootDirectory<B: Deref<Target = [Block]>, E: Debug, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     directory: Directory<B, E, IO>,
     upcase_table: region::data::UpcaseTable,
     volumn_label: Option<heapless::String<22>>,
@@ -33,7 +36,7 @@ pub struct RootDirectory<B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO> RootDirectory<B, E, IO>
 where
-    IO: io::IO<Block = B, Error = E>,
+    IO: io::IO<Block<'static> = B, Error = E>,
 {
     pub(crate) async fn new(
         io: Shared<IO>,

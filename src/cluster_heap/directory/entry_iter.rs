@@ -17,10 +17,11 @@ pub(crate) struct EntryIter<'a, IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<'a, B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>> EntryIter<'a, IO> {
-    pub(crate) async fn new(
-        meta: &'a mut MetaFileDirectory<IO>,
-    ) -> Result<EntryIter<'a, IO>, Error<E>> {
+impl<'a, B: Deref<Target = [Block]>, E: Debug, IO> EntryIter<'a, IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
+    pub async fn new(meta: &'a mut MetaFileDirectory<IO>) -> Result<EntryIter<'a, IO>, Error<E>> {
         let sector_index = meta.sector_index;
         let mut io = meta.io.acquire().await.wrap();
         let sector = io.read(sector_index.id(&meta.fs)).await?;
@@ -29,7 +30,7 @@ impl<'a, B: Deref<Target = [Block]>, E: Debug, IO: io::IO<Block = B, Error = E>>
         Ok(Self { meta, entries, sector_index, index: u8::MAX })
     }
 
-    pub(crate) async fn skip(&mut self, num_entries: u8) -> Result<(), Error<E>> {
+    pub async fn skip(&mut self, num_entries: u8) -> Result<(), Error<E>> {
         self.index = self.index.wrapping_add(num_entries);
         let sector_size = self.meta.fs.sector_size() as usize;
         if (self.index as usize * ENTRY_SIZE) >= sector_size {

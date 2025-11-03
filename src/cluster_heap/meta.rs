@@ -44,7 +44,10 @@ impl<IO> MetaFileDirectory<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), deasync::deasync)]
-impl<B: Deref<Target = [Block]>, E, IO: io::IO<Block = B, Error = E>> MetaFileDirectory<IO> {
+impl<B: Deref<Target = [Block]>, E, IO> MetaFileDirectory<IO>
+where
+    IO: io::IO<Block<'static> = B, Error = E>,
+{
     pub async fn next(&mut self, sector_index: SectorIndex) -> Result<SectorIndex, Error<E>> {
         let fat_chain = self.metadata.stream_extension.general_secondary_flags.fat_chain();
         if sector_index.sector_index != self.fs.sectors_per_cluster() {
