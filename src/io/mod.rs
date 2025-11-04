@@ -20,7 +20,7 @@ pub(crate) fn flatten(sector: &[Block]) -> &[u8] {
 }
 
 #[cfg_attr(feature = "async", async_trait)]
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 pub trait IO {
     type Block<'a>: Deref<Target = [Block]> + 'a;
     type Error: Debug;
@@ -35,7 +35,7 @@ pub trait IO {
 
 pub(crate) struct Wrapper<D>(D);
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E, T, D> Wrapper<D>
 where
     T: IO<Block<'static> = B, Error = E>,

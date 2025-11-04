@@ -7,7 +7,7 @@ embedded-exfat
 256B for upcase table and 12B plus name size for each file or directory,
 and 12B for root directory.
 
-For async scenario, enable `async-std` feature if std library available
+For async scenario, enable `tokio` feature if std library available
 otherwide enable `async` feature
 
 For `no_std` scenario, be aware that thread safety is provided by spin crate,
@@ -50,9 +50,13 @@ Features
 
   Enable async support
 
-* **async-std**
+* **tokio**
 
-  Enable async support with std library
+  Enable async support with tokio
+
+* **smol**
+
+  Enable async support with smol
 
 * **std** (enable by default)
 

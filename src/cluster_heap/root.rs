@@ -14,9 +14,9 @@ use super::{
 };
 use crate::endian::Little as LE;
 use crate::error::{DataError, Error, OperationError};
-use crate::fat;
+use crate::fat::Info as FAT;
 use crate::file::FileOptions;
-use crate::fs::{self, SectorIndex};
+use crate::fs::{Info as FS, SectorIndex};
 use crate::io::{self, Block, Wrap};
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
@@ -28,20 +28,21 @@ pub struct RootDirectory<B: Deref<Target = [Block]>, E: Debug, IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
-    directory: Directory<B, E, IO>,
+    meta: MetaFileDirectory<IO>,
+    upcase_table_data: Rc<crate::upcase_table::UpcaseTable>,
     upcase_table: region::data::UpcaseTable,
     volumn_label: Option<heapless::String<22>>,
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO> RootDirectory<B, E, IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
     pub(crate) async fn new(
         io: Shared<IO>,
-        fat: fat::Info,
-        fs: fs::Info,
+        fat: FAT,
+        fs: FS,
         cluster_id: ClusterID,
     ) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<22>> = None;
@@ -51,8 +52,10 @@ where
         let mut borrow_io = io.acquire().await.wrap();
         let sector = borrow_io.read(sector_index.id(&fs)).await?;
         let entries: &[RawEntry; 16] = unsafe { mem::transmute(&sector[0]) };
+        // FIXME: should walk through all entries till all data found.
         for entry in entries.iter() {
-            match RawEntryType::from(entry[0]).entry_type() {
+            let raw_type = RawEntryType::from(entry[0]);
+            match raw_type.entry_type() {
                 Ok(EntryType::AllocationBitmap) => {
                     let bitmap: &region::data::AllocationBitmap = unsafe { mem::transmute(entry) };
                     allocation_bitmap = Some(*bitmap)
@@ -65,7 +68,8 @@ where
                     let table: &region::data::UpcaseTable = unsafe { mem::transmute(entry) };
                     upcase_table = Some(*table)
                 }
-                _ => break,
+                _ if raw_type.is_end_of_directory() => break,
+                _ => continue,
             };
         }
         drop(borrow_io);
@@ -97,24 +101,23 @@ where
         let upcase_table_data = Rc::new((*array).into());
         drop(borrow_io);
         let meta = MetaFileDirectory { io, context, fat, fs, metadata, options, sector_index };
-        let directory = Directory::new(meta, upcase_table_data);
-        Ok(Self { directory, upcase_table, volumn_label })
+        Ok(Self { meta, upcase_table_data, upcase_table, volumn_label })
     }
 
     /// Traversing allocation bitmap and gather precise usage info
     pub async fn update_usage(&mut self) -> Result<(), Error<E>> {
-        self.directory.meta.context.acquire().await.allocation_bitmap.update_usage().await
+        self.meta.context.acquire().await.allocation_bitmap.update_usage().await
     }
 
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
-        let fs_info = &self.directory.meta.fs;
+        let fs_info = &self.meta.fs;
         let first_sector = SectorIndex::new(first_cluster.into(), 0).id(&fs_info);
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = fs_info.sector_size();
         let num_sectors = data_length / sector_size as u64;
-        let mut io = self.directory.meta.io.acquire().await.wrap();
+        let mut io = self.meta.io.acquire().await.wrap();
         for i in 0..num_sectors {
             let sector = io.read(first_sector + i).await?;
             checksum.write(crate::io::flatten(&*sector));
@@ -136,11 +139,12 @@ where
     }
 
     pub async fn open(&mut self) -> Result<Directory<B, E, IO>, Error<E>> {
-        let meta = self.directory.meta.clone();
-        let mut context = self.directory.meta.context.acquire().await;
+        let meta = self.meta.clone();
+        let mut context = self.meta.context.acquire().await;
         if !context.opened_entries.add(meta.id()) {
             return Err(OperationError::AlreadyOpen.into());
         }
-        Ok(Directory::new(meta, self.directory.upcase_table.clone()))
+        trace!("Open root directory sector {}", meta.sector_index);
+        Ok(Directory::new(meta, self.upcase_table_data.clone()))
     }
 }

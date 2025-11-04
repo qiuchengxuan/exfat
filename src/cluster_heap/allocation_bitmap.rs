@@ -42,7 +42,7 @@ pub(crate) struct Meta {
 }
 
 impl Meta {
-    #[cfg_attr(not(feature = "async"), deasync::deasync)]
+    #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
     pub(crate) async fn new<B, E, IO>(io: Shared<IO>, size: u32) -> Result<Self, Error<E>>
     where
         B: Deref<Target = [Block]>,
@@ -68,7 +68,7 @@ pub struct DumbAllocator<IO> {
     num_inuse: u32,
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E, IO> DumbAllocator<IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,

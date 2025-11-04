@@ -8,7 +8,7 @@ pub(crate) struct Info {
     length: u32,
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl Info {
     pub fn new(sector_size_shift: u8, offset: u32, length: u32) -> Self {
         Self { sector_size_shift, offset, length }

@@ -69,7 +69,7 @@ pub struct ExFAT<IO> {
     root: ClusterID,
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO> ExFAT<IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
@@ -159,5 +159,37 @@ where
     pub async fn try_free(self) -> Result<IO, Self> {
         let ExFAT { io, serial_number, fat_info, fs_info, root } = self;
         io.try_unwrap().await.map_err(|io| Self { io, serial_number, fat_info, fs_info, root })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test_log::test]
+    fn test_exfat() {
+        use std::process::Command as CMD;
+
+        use crate::io::std::FileIO;
+
+        log::set_max_level(log::LevelFilter::Trace);
+
+        let args = ["-s", "4194304", "test.img"];
+        let output = CMD::new("truncate").args(args).output().unwrap();
+        assert!(output.status.success());
+        let output = CMD::new("/usr/sbin/mkfs.exfat").args(["test.img"]).output().unwrap();
+        assert!(output.status.success());
+
+        {
+            let io = FileIO::open("test.img").unwrap();
+            let mut exfat = super::ExFAT::new(io).unwrap();
+            let mut root = exfat.root_directory().unwrap();
+            root.validate_upcase_table_checksum().unwrap();
+            root.update_usage().unwrap();
+            let mut root_dir = root.open().unwrap();
+            root_dir.create("ut.bin", false).unwrap();
+            let entry = root_dir.find("ut.bin").unwrap().unwrap();
+            root_dir.delete(&entry).unwrap();
+        }
+
+        CMD::new("rm").args(["-f", "test.img"]).output().unwrap();
     }
 }

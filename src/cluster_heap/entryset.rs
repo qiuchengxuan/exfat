@@ -1,5 +1,6 @@
-use core::fmt::Display;
 use core::mem::MaybeUninit;
+
+use derive_more::Display;
 
 use crate::file::MAX_FILENAME_SIZE;
 use crate::fs::{self, SectorIndex};
@@ -7,22 +8,18 @@ use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 use crate::types::SectorID;
 
-#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Display, Eq, Ord, PartialEq, PartialOrd)]
+#[display("{}:{}", sector_id, index)]
 pub(crate) struct EntryID {
     pub sector_id: SectorID,
     pub index: u8, // Max sector size / enty size = 4096 / 32 = 128
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Display)]
+#[display("{}.{}", sector_index, index)]
 pub(crate) struct EntryIndex {
     pub sector_index: SectorIndex,
     pub index: u8, // Within sector
-}
-
-impl Display for EntryIndex {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}.{}", self.sector_index, self.index)
-    }
 }
 
 impl EntryIndex {

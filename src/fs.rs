@@ -1,4 +1,4 @@
-use core::fmt::Display;
+use derive_more::Display;
 
 use crate::types::{ClusterID, SectorID};
 
@@ -27,21 +27,19 @@ impl Info {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Display)]
+#[display("{}:{}", cluster_id, sector_index)]
 pub struct SectorIndex {
     pub cluster_id: ClusterID,
     pub sector_index: u32,
 }
 
-impl Display for SectorIndex {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}:{}", self.cluster_id, self.sector_index)
-    }
-}
-
 impl SectorIndex {
     pub fn id(&self, fs_info: &Info) -> SectorID {
         let index: u32 = self.cluster_id.into();
+        if index == 0 {
+            return SectorID::BOOT; // root directory metadata
+        }
         let num_sectors = (index as u64 - 2) * fs_info.sectors_per_cluster() as u64;
         SectorID::from(fs_info.heap_offset as u64 + num_sectors + self.sector_index as u64)
     }

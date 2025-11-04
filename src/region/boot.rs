@@ -71,7 +71,7 @@ impl BootChecksum {
 #[cfg(test)]
 mod test {
     #[test]
-    fn test_exfat() {
+    fn test_boot_sector() {
         use std::io::Read;
         use std::process::Command as CMD;
 

@@ -27,7 +27,7 @@ pub struct FileIO {
     sector_size_shift: u8,
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl FileIO {
     pub async fn open<P: AsRef<Path>>(filepath: P) -> std::io::Result<Self> {
         let mut options = match () {
@@ -42,7 +42,7 @@ impl FileIO {
 }
 
 #[cfg_attr(feature = "async", async_trait)]
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl super::IO for FileIO {
     type Block<'a> = heapless::Vec<Block, 8>;
     type Error = std::io::Error;

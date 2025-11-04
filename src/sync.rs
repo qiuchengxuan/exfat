@@ -3,7 +3,7 @@ use core::ops::DerefMut;
 pub(crate) use std::sync::Mutex;
 
 #[cfg(all(feature = "sync", feature = "async", feature = "smol"))]
-pub(crate) use smol::sync::Mutex;
+pub(crate) use smol::lock::Mutex;
 #[cfg(all(feature = "sync", not(feature = "std")))]
 pub(crate) use spin::Mutex;
 #[cfg(all(feature = "sync", feature = "async", feature = "tokio"))]
@@ -31,7 +31,7 @@ impl<T> Shared<T> {
     }
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<T> Shared<T> {
     pub async fn acquire(&self) -> impl DerefMut<Target = T> {
         match () {
@@ -48,10 +48,12 @@ impl<T> Shared<T> {
 
     pub async fn try_unwrap(self) -> Result<T, Self> {
         match () {
-            #[cfg(all(feature = "sync", any(feature = "tokio", feature = "smol")))]
-            () => self.0.try_unwrap().await.map(|mutex| mutex.into_inner()),
+            #[cfg(all(feature = "sync", feature = "async"))]
+            () => alloc::sync::Arc::try_unwrap(self.0).map(|mutex| mutex.into_inner()),
             #[cfg(all(feature = "sync", feature = "std", not(feature = "async")))]
-            () => self.0.try_unwrap().map(|mutex| mutex.into_inner().unwrap()),
+            () => alloc::sync::Arc::try_unwrap(self.0).map(|mutex| mutex.into_inner().unwrap()),
+            #[cfg(all(feature = "sync", not(feature = "std"), not(feature = "async")))]
+            () => alloc::sync::Arc::try_unwrap(self.0).map(|mutex| mutex.into_inner()),
             #[cfg(not(feature = "sync"))]
             () => alloc::rc::Rc::try_unwrap(self.0).map(|cell| cell.into_inner()),
         }

@@ -1,6 +1,6 @@
 #[cfg(feature = "max-filename-size-30")]
 pub const MAX_FILENAME_SIZE: usize = 30;
-#[cfg(not(feature = "limit-filename-size"))]
+#[cfg(not(feature = "max-filename-size-30"))]
 pub const MAX_FILENAME_SIZE: usize = 510;
 
 #[derive(Copy, Clone)]

@@ -57,7 +57,7 @@ where
 
 type FileOrDir<B, E, IO> = FileOrDirectory<B, E, IO>;
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO> Directory<B, E, IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
@@ -71,16 +71,11 @@ where
         let mut file_directory: FileDirectory;
         let mut stream_extension: Secondary<StreamExtension>;
         loop {
-            let entry = match iter.next().await? {
-                Some(entry) => entry,
-                None => break,
-            };
+            let Some(entry) = iter.next().await? else { break };
             let entry_type: RawEntryType = entry[0].into();
             match entry_type.entry_type() {
                 Ok(EntryType::FileDirectory) => (),
-                Ok(_) => {
-                    continue;
-                }
+                Ok(_) => continue,
                 Err(t) => {
                     warn!("Unexpected entry type {}", t);
                     return Err(DataError::Metadata.into());
@@ -101,7 +96,7 @@ where
             let array: MaybeUninit<[u16; MAX_FILENAME_SIZE / 2]> = MaybeUninit::uninit();
             let mut array: [u16; MAX_FILENAME_SIZE / 2] = unsafe { array.assume_init() };
             for i in 0..(file_directory.secondary_count - 1) as usize {
-                if cfg!(feature = "limit-filename-size") && (i + 1) * 15 > array.len() {
+                if cfg!(feature = "max-filename-size-30") && (i + 1) * 15 > array.len() {
                     continue;
                 }
                 let entry: &Filename = unsafe { mem::transmute(iter.next().await?.unwrap()) };
@@ -177,7 +172,7 @@ where
 
     /// Open a file or directory
     pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDir<B, E, IO>, Error<E>> {
-        trace!("Open {} on entry-ref {}", entryset.name(), entryset.entry_index);
+        trace!("Open {} with entry index {}", entryset.name(), entryset.entry_index);
         let mut context = self.meta.context.acquire().await;
         if !context.opened_entries.add(entryset.id(&self.meta.fs)) {
             return Err(OperationError::AlreadyOpen.into());

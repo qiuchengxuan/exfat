@@ -47,7 +47,7 @@ where
     }
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO> File<B, E, IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,

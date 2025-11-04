@@ -16,7 +16,7 @@ pub(crate) struct EntryIter<'a, IO> {
     pub index: u8,
 }
 
-#[cfg_attr(not(feature = "async"), deasync::deasync)]
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<'a, B: Deref<Target = [Block]>, E: Debug, IO> EntryIter<'a, IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
