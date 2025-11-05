@@ -4,7 +4,7 @@ use core::ops::{BitXor, Deref, Sub};
 use memoffset::offset_of;
 
 use crate::error::{AllocationError, DataError, Error};
-use crate::fat::Info as FAT;
+use crate::fat::Meta as FAT;
 use crate::io::{self, BLOCK_SIZE, Block, Wrap};
 use crate::region::boot::BootSector;
 use crate::region::fat::Entry;

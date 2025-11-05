@@ -68,8 +68,8 @@ impl EntrySet {
         valid_data_length.to_ne()
     }
 
-    pub(crate) fn id(&self, fs_info: &fs::Info) -> EntryID {
-        let sector_id = self.entry_index.sector_index.id(fs_info);
+    pub(crate) fn id(&self, fs: &fs::Meta) -> EntryID {
+        let sector_id = self.entry_index.sector_index.id(fs);
         EntryID { sector_id, index: self.entry_index.index }
     }
 }

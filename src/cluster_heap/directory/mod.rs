@@ -11,6 +11,7 @@ use super::entryset::{EntryIndex, EntrySet};
 use super::file::File;
 use super::meta::MetaFileDirectory;
 use super::metadata::Metadata;
+use crate::cluster_heap::meta::FileSectors;
 use crate::error::{DataError, Error, ImplementationError, InputError, OperationError};
 use crate::file::{FileOptions, MAX_FILENAME_SIZE, TouchOptions};
 use crate::fs::SectorIndex;
@@ -21,7 +22,7 @@ use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtens
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry, checksum};
 use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
-use entry_iter::EntryIter;
+pub(crate) use entry_iter::EntryIter;
 
 pub struct Directory<B: Deref<Target = [Block]>, E: Debug, IO>
 where
@@ -67,7 +68,7 @@ where
         F: Fn(&FileDirectory, &Secondary<StreamExtension>) -> bool,
         H: FnMut(&EntrySet) -> Option<R>,
     {
-        let mut iter = EntryIter::new(&mut self.meta).await?;
+        let mut iter = EntryIter::new(&mut self.meta.sectors).await?;
         let mut file_directory: FileDirectory;
         let mut stream_extension: Secondary<StreamExtension>;
         loop {
@@ -167,28 +168,28 @@ where
     /// Change current directory timestamp
     pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
         self.meta.touch(datetime, opts).await?;
-        self.meta.io.acquire().await.wrap().flush().await
+        self.meta.sectors.io.acquire().await.wrap().flush().await
     }
 
     /// Open a file or directory
     pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDir<B, E, IO>, Error<E>> {
         trace!("Open {} with entry index {}", entryset.name(), entryset.entry_index);
         let mut context = self.meta.context.acquire().await;
-        if !context.opened_entries.add(entryset.id(&self.meta.fs)) {
+        if !context.opened_entries.add(entryset.id(&self.meta.sectors.fs)) {
             return Err(OperationError::AlreadyOpen.into());
         }
         let cluster_id = entryset.stream_extension.first_cluster.to_ne();
         let file_attributes = entryset.file_directory.file_attributes();
         let sector_index = SectorIndex::new(cluster_id.into(), 0);
-        let meta = MetaFileDirectory {
-            io: self.meta.io.clone(),
-            context: self.meta.context.clone(),
+        let sectors = FileSectors {
+            io: self.meta.sectors.io.clone(),
             metadata: Metadata::new(entryset.clone()),
-            options: FileOptions::default(),
             sector_index,
-            ..self.meta
+            ..self.meta.sectors
         };
-        let (length, capacity) = (meta.metadata.length(), meta.metadata.capacity());
+        let context = self.meta.context.clone();
+        let meta = MetaFileDirectory { sectors, context, options: FileOptions::default() };
+        let (length, capacity) = (meta.sectors.metadata.length(), meta.sectors.metadata.capacity());
         trace!("Cluster id {} length {} capacity {}", cluster_id, length, capacity);
         if file_attributes.directory() > 0 {
             let upcase_table = self.upcase_table.clone();
@@ -205,12 +206,12 @@ where
         let mut candidate = EntryIndex::default();
         let mut free_count = 0;
 
-        let mut sector_index = self.meta.sector_index;
+        let mut sector_index = self.meta.sectors.sector_index;
         let mut skip = 0;
 
         loop {
-            let mut io = self.meta.io.acquire().await.wrap();
-            let sector = io.read(sector_index.id(&self.meta.fs)).await?;
+            let mut io = self.meta.sectors.io.acquire().await.wrap();
+            let sector = io.read(sector_index.id(&self.meta.sectors.fs)).await?;
             let entries: &[[RawEntry; 16]] = unsafe { mem::transmute(&*sector) };
             for (i, entry) in entries.iter().map(|e| e.iter()).flatten().enumerate() {
                 if skip > 0 {
@@ -247,7 +248,7 @@ where
                 }
             }
             drop(io);
-            sector_index = self.meta.next(sector_index).await?;
+            sector_index = self.meta.sectors.next(sector_index).await?;
         }
     }
 
@@ -269,11 +270,11 @@ where
         let (free_entry_index, tail) = self.lookup_free(num_entries).await?;
         let mut write_entry_index = free_entry_index;
         let sector_index = free_entry_index.sector_index;
-        let sector_size = self.meta.fs.sector_size() as usize;
+        let sector_size = self.meta.sectors.fs.sector_size() as usize;
         let capacity = sector_size / ENTRY_SIZE;
         let out_of_capacity = free_entry_index.index + num_entries + tail as u8 >= capacity as u8;
         if out_of_capacity {
-            let sector_index = match self.meta.next(sector_index).await {
+            let sector_index = match self.meta.sectors.next(sector_index).await {
                 Ok(sector_index) => sector_index,
                 Err(Error::Operation(OperationError::EOF)) => {
                     SectorIndex::new(self.meta.allocate(sector_index.cluster_id).await?, 0)
@@ -291,10 +292,10 @@ where
         let sum = checksum(&file_directory, &stream_extension, name);
         file_directory.set_checksum = sum.into();
 
-        let sector_id = write_entry_index.sector_index.id(&self.meta.fs);
+        let sector_id = write_entry_index.sector_index.id(&self.meta.sectors.fs);
         let offset = write_entry_index.index as usize * ENTRY_SIZE;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&file_directory) };
-        let mut io = self.meta.io.acquire().await.wrap();
+        let mut io = self.meta.sectors.io.acquire().await.wrap();
         io.write(sector_id, offset, bytes).await?;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&stream_extension) };
         io.write(sector_id, offset + ENTRY_SIZE, bytes).await?;
@@ -315,7 +316,7 @@ where
         };
         // Fill free entries afterwards to avoid corrupting metadata
         if out_of_capacity {
-            let sector_id = sector_index.id(&self.meta.fs);
+            let sector_id = sector_index.id(&self.meta.sectors.fs);
             let byte: u8 = RawEntryType::new(EntryType::Filename, false).into();
             for i in free_entry_index.index as usize..(sector_size / ENTRY_SIZE) {
                 io.write(sector_id, i * ENTRY_SIZE, &[byte]).await?;
@@ -335,23 +336,23 @@ where
                     directory.close().await?;
                     return Err(OperationError::DirectoryNotEmpty.into());
                 }
-                directory.meta.metadata.clone()
+                directory.meta.sectors.metadata.clone()
             }
-            FileOrDirectory::File(file) => file.meta.metadata.clone(),
+            FileOrDirectory::File(file) => file.meta.sectors.metadata.clone(),
         };
 
-        let fs_info = self.meta.fs;
+        let fs_info = self.meta.sectors.fs;
         let mut sector_id = meta.entry_index.sector_index.id(&fs_info);
         let secondary_count = meta.file_directory.secondary_count as usize;
         let last_index = meta.entry_index.index as usize + secondary_count;
         let sector_size = fs_info.sector_size() as usize;
         let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
-            true => self.meta.next(meta.entry_index.sector_index).await?.id(&fs_info),
+            true => self.meta.sectors.next(meta.entry_index.sector_index).await?.id(&fs_info),
             false => sector_id,
         };
 
         let mut offset = meta.entry_index.index as usize * ENTRY_SIZE;
-        let mut io = self.meta.io.acquire().await.wrap();
+        let mut io = self.meta.sectors.io.acquire().await.wrap();
         io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
         offset = (offset + ENTRY_SIZE) % sector_size;
         if offset == 0 {
@@ -374,7 +375,7 @@ where
             let mut context = self.meta.context.acquire().await;
             context.allocation_bitmap.release(cluster_id, fat_chain).await?;
         }
-        self.meta.io.acquire().await.wrap().flush().await
+        self.meta.sectors.io.acquire().await.wrap().flush().await
     }
 
     #[cfg(feature = "async")]
