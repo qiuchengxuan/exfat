@@ -64,8 +64,8 @@ use crate::types::SectorID;
 pub struct ExFAT<IO> {
     io: Shared<IO>,
     serial_number: u32,
-    fat_info: fat::Info,
-    fs_info: fs::Info,
+    fat: fat::Meta,
+    fs: fs::Meta,
     root: ClusterID,
 }
 
@@ -91,15 +91,15 @@ where
         let root = ClusterID::from(boot_sector.first_cluster_of_root_directory.to_ne());
         debug!("Root directory on cluster {}", root);
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
-        let fat_info = fat::Info::new(sector_size_shift, fat_offset, fat_length);
-        let fs_info = fs::Info {
+        let fat = fat::Meta::new(sector_size_shift, fat_offset, fat_length);
+        let fs = fs::Meta {
             heap_offset: boot_sector.cluster_heap_offset.to_ne(),
             sectors_per_cluster_shift: boot_sector.sectors_per_cluster_shift,
             sector_size_shift,
         };
-        debug!("Filesystem info: {:?}", fs_info);
+        debug!("Filesystem metainfo: {fs:?}");
         let serial_number = boot_sector.volumn_serial_number.to_ne();
-        Ok(Self { io: Shared::new(io), serial_number, fs_info, fat_info, root })
+        Ok(Self { io: Shared::new(io), serial_number, fs, fat, root })
     }
 
     pub async fn is_dirty(&mut self) -> Result<bool, Error<E>> {
@@ -153,12 +153,12 @@ where
     /// false allocation failure when still some clusters available.
     /// For precise cluster usage calculation, you may call `update_usage` which will cost some time.
     pub async fn root_directory(&mut self) -> Result<Root<B, E, IO>, Error<E>> {
-        Root::new(self.io.clone(), self.fat_info, self.fs_info, self.root).await
+        Root::new(self.io.clone(), self.fat, self.fs, self.root).await
     }
 
     pub async fn try_free(self) -> Result<IO, Self> {
-        let ExFAT { io, serial_number, fat_info, fs_info, root } = self;
-        io.try_unwrap().await.map_err(|io| Self { io, serial_number, fat_info, fs_info, root })
+        let ExFAT { io, serial_number, fat, fs, root } = self;
+        io.try_unwrap().await.map_err(|io| Self { io, serial_number, fat, fs, root })
     }
 }
 
@@ -186,6 +186,7 @@ mod test {
             root.update_usage().unwrap();
             let mut root_dir = root.open().unwrap();
             root_dir.create("ut.bin", false).unwrap();
+            root_dir.find("ut.bin").unwrap().unwrap();
             let entry = root_dir.find("ut.bin").unwrap().unwrap();
             root_dir.delete(&entry).unwrap();
         }

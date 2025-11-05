@@ -3,13 +3,13 @@ use derive_more::Display;
 use crate::types::{ClusterID, SectorID};
 
 #[derive(Copy, Clone, Debug)]
-pub struct Info {
+pub struct Meta {
     pub heap_offset: u32,
     pub sectors_per_cluster_shift: u8,
     pub sector_size_shift: u8,
 }
 
-impl Info {
+impl Meta {
     pub fn sector_size(&self) -> u16 {
         1 << self.sector_size_shift
     }
@@ -35,7 +35,7 @@ pub struct SectorIndex {
 }
 
 impl SectorIndex {
-    pub fn id(&self, fs_info: &Info) -> SectorID {
+    pub fn id(&self, fs_info: &Meta) -> SectorID {
         let index: u32 = self.cluster_id.into();
         if index == 0 {
             return SectorID::BOOT; // root directory metadata

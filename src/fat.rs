@@ -1,15 +1,16 @@
+use crate::io::Block;
 use crate::region::fat::Entry;
 use crate::types::{ClusterID, SectorID};
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct Info {
+pub(crate) struct Meta {
     sector_size_shift: u8,
     offset: u32,
     length: u32,
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl Info {
+impl Meta {
     pub fn new(sector_size_shift: u8, offset: u32, length: u32) -> Self {
         Self { sector_size_shift, offset, length }
     }
@@ -28,11 +29,7 @@ impl Info {
         index as usize * 4 % (1 << self.sector_size_shift)
     }
 
-    pub fn next_cluster_id(
-        &mut self,
-        sector: &[[u8; 512]],
-        cluster_id: ClusterID,
-    ) -> Result<Entry, u32> {
+    pub fn next_cluster_id(&self, sector: &[Block], cluster_id: ClusterID) -> Result<Entry, u32> {
         let index: u32 = cluster_id.into();
         let offset = index as usize % ((1 << self.sector_size_shift) / 4);
         let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[offset / 128]) };
