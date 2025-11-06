@@ -25,6 +25,10 @@ use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::sync::Shared;
 use crate::types::{ClusterID, SectorID};
 
+macro_rules! all_is_some {
+    ($($option:expr),+) => ($($option.is_some()) &&+);
+}
+
 pub struct RootDirectory<B: Deref<Target = [Block]>, E: Debug, IO>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
@@ -46,7 +50,6 @@ where
         fs: FS,
         cluster_id: ClusterID,
     ) -> Result<Self, Error<E>> {
-        let mut counter = 0;
         let mut volumn_label: Option<heapless::String<22>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
@@ -73,8 +76,7 @@ where
                 _ if raw_type.is_end_of_directory() => break,
                 _ => continue,
             };
-            counter += 1;
-            if counter == 3 {
+            if all_is_some!(allocation_bitmap, upcase_table, volumn_label) {
                 break;
             }
         }
