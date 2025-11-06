@@ -3,11 +3,11 @@ use alloc::vec::Vec;
 use super::{allocation_bitmap::AllocationBitmap, entryset::EntryID};
 
 pub struct OpenedEntries {
-    pub(crate) entries: Vec<EntryID>,
+    pub entries: Vec<EntryID>,
 }
 
 impl OpenedEntries {
-    pub(crate) fn add(&mut self, id: EntryID) -> bool {
+    pub fn add(&mut self, id: EntryID) -> bool {
         let index = match self.entries.binary_search(&id) {
             Ok(_) => return false,
             Err(index) => index,
@@ -16,7 +16,7 @@ impl OpenedEntries {
         true
     }
 
-    pub(crate) fn remove(&mut self, id: EntryID) -> bool {
+    pub fn remove(&mut self, id: EntryID) -> bool {
         let index = match self.entries.binary_search(&id) {
             Ok(index) => index,
             Err(_) => return false,

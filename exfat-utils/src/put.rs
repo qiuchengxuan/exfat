@@ -1,18 +1,15 @@
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::Read;
-use std::ops::Deref;
 
 use exfat::error::{Error, OperationError};
-use exfat::io::Block;
-use exfat::{FileOrDirectory, RootDirectory as Root};
 
 use crate::filepath::open;
+use crate::types::{FileOrDirectory, Root};
 
-pub fn put<B, E, IO>(root: &mut Root<B, E, IO>, path: &str, source: &str) -> Result<(), Error<E>>
+pub fn put<E: Debug, IO>(root: &mut Root<IO>, path: &str, source: &str) -> Result<(), Error<E>>
 where
-    B: Deref<Target = [Block]>,
-    E: std::fmt::Debug,
-    IO: exfat::io::IO<Block<'static> = B, Error = E>,
+    IO: exfat::io::IO<Error = E>,
 {
     let path = path.trim_end_matches('/');
     let (mut directory, name) = match path.rsplit_once('/') {

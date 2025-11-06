@@ -10,8 +10,11 @@ mod remove;
 mod sdmmc;
 mod touch;
 mod truncate;
+pub(crate) mod types;
 
+use std::cell::RefCell;
 use std::fmt::Debug;
+use std::rc::Rc;
 
 use clap::Parser;
 use exfat::error::Error;
@@ -111,12 +114,11 @@ fn exfat_datetime_now() -> DateTime {
     now.into()
 }
 
-fn action<E, IO>(io: IO, action: Action) -> Result<(), Error<E>>
+fn action<E: Debug, IO>(io: IO, action: Action) -> Result<(), Error<E>>
 where
-    E: std::fmt::Debug,
     IO: exfat::io::IO<Error = E>,
 {
-    let mut exfat = ExFAT::new(io)?;
+    let mut exfat = ExFAT::new(Rc::new(RefCell::new(io)))?;
     exfat.validate_checksum()?;
     let mut root = exfat.root_directory()?;
     root.validate_upcase_table_checksum()?;

@@ -20,46 +20,32 @@ use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory, name_hash};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry, checksum};
+use crate::sync::Share;
 use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
 pub(crate) use entry_iter::EntryIter;
 
-pub struct Directory<B: Deref<Target = [Block]>, E: Debug, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
+pub struct Directory<IO> {
     pub(crate) meta: MetaFileDirectory<IO>,
     pub(crate) upcase_table: Rc<UpcaseTable>,
-    #[cfg(feature = "async")]
     closed: bool,
 }
 
-impl<B: Deref<Target = [Block]>, E: Debug, IO> Directory<B, E, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
+impl<IO> Directory<IO> {
     pub(crate) fn new(meta: MetaFileDirectory<IO>, upcase_table: Rc<UpcaseTable>) -> Self {
         match () {
-            #[cfg(not(feature = "async"))]
-            _ => Self { meta, upcase_table },
-            #[cfg(feature = "async")]
             _ => Self { meta, upcase_table, closed: false },
         }
     }
 }
 
-pub enum FileOrDirectory<B: Deref<Target = [Block]>, E: Debug, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
-    File(File<B, E, IO>),
-    Directory(Directory<B, E, IO>),
+pub enum FileOrDirectory<IO> {
+    File(File<IO>),
+    Directory(Directory<IO>),
 }
 
-type FileOrDir<B, E, IO> = FileOrDirectory<B, E, IO>;
-
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO> Directory<B, E, IO>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> Directory<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -172,7 +158,7 @@ where
     }
 
     /// Open a file or directory
-    pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDir<B, E, IO>, Error<E>> {
+    pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDirectory<S>, Error<E>> {
         trace!("Open {} with entry index {}", entryset.name(), entryset.entry_index);
         let mut context = self.meta.context.acquire().await;
         if !context.opened_entries.add(entryset.id(&self.meta.sectors.fs)) {
@@ -378,24 +364,17 @@ where
         self.meta.sectors.io.acquire().await.wrap().flush().await
     }
 
-    #[cfg(feature = "async")]
-    /// `no_std` async only which must be explicitly called
+    /// must be explicitly called
     pub async fn close(mut self) -> Result<(), Error<E>> {
         self.closed = true;
         self.meta.close().await
     }
 }
 
-impl<B: Deref<Target = [Block]>, E: Debug, IO> Drop for Directory<B, E, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
+impl<S> Drop for Directory<S> {
     fn drop(&mut self) {
-        #[cfg(feature = "async")]
         if !self.closed {
-            panic!("Close must be explicitly called");
+            panic!("Directory not closed");
         }
-        #[cfg(not(feature = "async"))]
-        self.meta.close().unwrap();
     }
 }

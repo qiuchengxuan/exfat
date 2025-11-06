@@ -22,17 +22,14 @@ use crate::fs::{Meta as FS, SectorIndex};
 use crate::io::{self, Block, Wrap};
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
-use crate::sync::Shared;
+use crate::sync::{Share, Shared};
 use crate::types::{ClusterID, SectorID};
 
 macro_rules! all_is_some {
     ($($option:expr),+) => ($($option.is_some()) &&+);
 }
 
-pub struct RootDirectory<B: Deref<Target = [Block]>, E: Debug, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
+pub struct RootDirectory<IO> {
     meta: MetaFileDirectory<IO>,
     upcase_table_data: Rc<crate::upcase_table::UpcaseTable>,
     upcase_table: region::data::UpcaseTable,
@@ -40,20 +37,15 @@ where
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO> RootDirectory<B, E, IO>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> RootDirectory<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
-    pub(crate) async fn new(
-        io: Shared<IO>,
-        fat: FAT,
-        fs: FS,
-        cluster_id: ClusterID,
-    ) -> Result<Self, Error<E>> {
+    pub(crate) async fn new(io: S, fat: FAT, fs: FS, id: ClusterID) -> Result<Self, Error<E>> {
         let mut volumn_label: Option<heapless::String<22>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
-        let sector_index = SectorIndex::new(cluster_id, 0);
+        let sector_index = SectorIndex::new(id, 0);
         let mut metadata = Metadata::new(Default::default());
         metadata.stream_extension.general_secondary_flags.set_fat_chain();
         let mut sectors = FileSectors { io: io.clone(), fat, fs, metadata, sector_index };
@@ -142,7 +134,7 @@ where
         self.volumn_label.as_ref().map(|label| label.as_str())
     }
 
-    pub async fn open(&mut self) -> Result<Directory<B, E, IO>, Error<E>> {
+    pub async fn open(&mut self) -> Result<Directory<S>, Error<E>> {
         let sectors = &self.meta.sectors;
         let sectors =
             FileSectors { io: sectors.io.clone(), metadata: sectors.metadata.clone(), ..*sectors };

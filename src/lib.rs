@@ -38,7 +38,7 @@ pub mod file;
 pub(crate) mod fs;
 pub mod io;
 mod region;
-pub(crate) mod sync;
+pub mod sync;
 pub mod types;
 mod upcase_table;
 
@@ -58,11 +58,11 @@ pub use region::data::entryset::primary::DateTime;
 use types::ClusterID;
 
 use crate::io::Block;
-use crate::sync::Shared;
+use crate::sync::Share;
 use crate::types::SectorID;
 
 pub struct ExFAT<IO> {
-    io: Shared<IO>,
+    io: IO,
     serial_number: u32,
     fat: fat::Meta,
     fs: fs::Meta,
@@ -70,12 +70,13 @@ pub struct ExFAT<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO> ExFAT<IO>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> ExFAT<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
-    pub async fn new(mut io: IO) -> Result<Self, Error<E>> {
-        let block = io.wrap().read(SectorID::BOOT).await?;
+    pub async fn new(io: S) -> Result<Self, Error<E>> {
+        let mut wrap_io = io.acquire().await.wrap();
+        let block = wrap_io.read(SectorID::BOOT).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&block[0]) };
         if !boot_sector.is_exfat() {
             return Err(DataError::NotExFAT.into());
@@ -87,7 +88,7 @@ where
         let fat_length = boot_sector.fat_length.to_ne();
         debug!("FAT offset {} length {}", fat_offset, fat_length);
 
-        io.wrap().set_sector_size_shift(boot_sector.bytes_per_sector_shift)?;
+        wrap_io.set_sector_size_shift(boot_sector.bytes_per_sector_shift)?;
         let root = ClusterID::from(boot_sector.first_cluster_of_root_directory.to_ne());
         debug!("Root directory on cluster {}", root);
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
@@ -98,8 +99,9 @@ where
             sector_size_shift,
         };
         debug!("Filesystem metainfo: {fs:?}");
+        drop(wrap_io);
         let serial_number = boot_sector.volumn_serial_number.to_ne();
-        Ok(Self { io: Shared::new(io), serial_number, fs, fat, root })
+        Ok(Self { io, serial_number, fs, fat, root })
     }
 
     pub async fn is_dirty(&mut self) -> Result<bool, Error<E>> {
@@ -152,13 +154,12 @@ where
     /// Cluster usage is calculated by default, which is inaccurate, therefore you may encounter
     /// false allocation failure when still some clusters available.
     /// For precise cluster usage calculation, you may call `update_usage` which will cost some time.
-    pub async fn root_directory(&mut self) -> Result<Root<B, E, IO>, Error<E>> {
+    pub async fn root_directory(&mut self) -> Result<Root<S>, Error<E>> {
         Root::new(self.io.clone(), self.fat, self.fs, self.root).await
     }
 
-    pub async fn try_free(self) -> Result<IO, Self> {
-        let ExFAT { io, serial_number, fat, fs, root } = self;
-        io.try_unwrap().await.map_err(|io| Self { io, serial_number, fat, fs, root })
+    pub async fn free(self) -> S {
+        self.io
     }
 }
 
@@ -166,7 +167,9 @@ where
 mod test {
     #[test_log::test]
     fn test_exfat() {
+        use std::cell::RefCell;
         use std::process::Command as CMD;
+        use std::rc::Rc;
 
         use crate::io::std::FileIO;
 
@@ -179,7 +182,7 @@ mod test {
         assert!(output.status.success());
 
         {
-            let io = FileIO::open("test.img").unwrap();
+            let io = Rc::new(RefCell::new(FileIO::open("test.img").unwrap()));
             let mut exfat = super::ExFAT::new(io).unwrap();
             let mut root = exfat.root_directory().unwrap();
             root.validate_upcase_table_checksum().unwrap();

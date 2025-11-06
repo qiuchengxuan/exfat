@@ -12,11 +12,11 @@ use crate::io::{self, Block, Wrap};
 use crate::region::data::entryset::primary::DateTime;
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
 use crate::region::fat::Entry;
-use crate::sync::Shared;
+use crate::sync::{Share, Shared};
 use crate::types::ClusterID;
 
 pub struct FileSectors<IO> {
-    pub io: Shared<IO>,
+    pub io: IO,
     pub fat: fat::Meta,
     pub fs: fs::Meta,
     pub metadata: Metadata,
@@ -24,7 +24,7 @@ pub struct FileSectors<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E, IO> FileSectors<IO>
+impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> FileSectors<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -61,7 +61,7 @@ pub struct MetaFileDirectory<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E, IO> MetaFileDirectory<IO>
+impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> MetaFileDirectory<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {

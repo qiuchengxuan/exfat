@@ -14,7 +14,7 @@ exclude_feature_sets = [["smol", "tokio"], ["async", "std"]]
 exclude_features = ["extern-datetime-now", "default"]
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { version = "0.1", optional = true }
 bitfield = "0.19"
 chrono = { version = "0.4", optional = true, default-features = false }
 derive_more = { version = "2.0", features = ["display", "from", "into"], default-features = false }
@@ -22,7 +22,7 @@ displaydoc = { version = "0.2", default-features = false }
 heapless = "0.9"
 hex-literal = "1.0"
 log = { version = "0.4", optional = true }
-maybe-async = { version = "0.2.10", features = ["is_sync"] }
+maybe-async = { version = "0.2", features = ["is_sync"] }
 memoffset = "0.9"
 smol = { version = "2.0", optional = true }
 spin = "0.10"
@@ -34,7 +34,7 @@ log = "0.4"
 test-log = "0.2.18"
 
 [features]
-async = []
+async = ["dep:async-trait"]
 std = ["chrono/std", "chrono/clock", "thiserror/std", "derive_more/std", "displaydoc/std"]
 sync = []
 default = ["std"]

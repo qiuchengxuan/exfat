@@ -8,6 +8,7 @@ use crate::fs::SectorIndex;
 use crate::io::{self, Block, Wrap};
 use crate::region::data::entry_type::RawEntryType;
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
+use crate::sync::Share;
 
 pub struct EntryIter<'a, IO> {
     sectors: &'a mut FileSectors<IO>,
@@ -17,11 +18,11 @@ pub struct EntryIter<'a, IO> {
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<'a, B: Deref<Target = [Block]>, E: Debug, IO> EntryIter<'a, IO>
+impl<'a, B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> EntryIter<'a, S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
-    pub async fn new(sectors: &'a mut FileSectors<IO>) -> Result<EntryIter<'a, IO>, Error<E>> {
+    pub async fn new(sectors: &'a mut FileSectors<S>) -> Result<EntryIter<'a, S>, Error<E>> {
         let sector_index = sectors.sector_index;
         let mut io = sectors.io.acquire().await.wrap();
         let sector = io.read(sector_index.id(&sectors.fs)).await?;

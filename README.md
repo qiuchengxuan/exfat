@@ -18,13 +18,16 @@ Using this crate
 
 ```rust
 use std::io::Write;
+use std::rc::Rc;
+use std::cell::RefCell;
+
 use exfat::error::Error;
 use exfat::io::std::FileIO;
 use exfat::ExFAT;
 use exfat::FileOrDirectory;
 
 let io = FileIO::open(device).map_err(|e| Error::IO(e)).unwrap();
-let mut exfat = ExFAT::new(io).unwrap();
+let mut exfat = ExFAT::new(Rc::new(RefCell::new(io))).unwrap();
 exfat.validate_checksum().unwrap();
 let mut root = exfat.root_directory().unwrap();
 root.validate_upcase_table_checksum().unwrap();

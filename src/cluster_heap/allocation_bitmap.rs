@@ -8,7 +8,7 @@ use crate::fat::Meta as FAT;
 use crate::io::{self, BLOCK_SIZE, Block, Wrap};
 use crate::region::boot::BootSector;
 use crate::region::fat::Entry;
-use crate::sync::Shared;
+use crate::sync::Share;
 use crate::types::{ClusterID, SectorID};
 
 const BITMAP_SIZE: usize = BLOCK_SIZE / size_of::<usize>();
@@ -43,10 +43,11 @@ pub(crate) struct Meta {
 
 impl Meta {
     #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-    pub(crate) async fn new<B, E, IO>(io: Shared<IO>, size: u32) -> Result<Self, Error<E>>
+    pub(crate) async fn new<B, E, IO, S>(io: S, size: u32) -> Result<Self, Error<E>>
     where
         B: Deref<Target = [Block]>,
         IO: io::IO<Block<'static> = B, Error = E>,
+        S: Share<Target = IO>,
     {
         let mut io = io.acquire().await.wrap();
         let blocks = io.read(SectorID::BOOT).await?;
@@ -60,7 +61,7 @@ impl Meta {
 
 #[derive(Clone)]
 pub struct DumbAllocator<IO> {
-    io: Shared<IO>,
+    io: IO,
     base: SectorID,
     fat: FAT,
     cursor: ClusterID,
@@ -69,7 +70,7 @@ pub struct DumbAllocator<IO> {
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E, IO> DumbAllocator<IO>
+impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> DumbAllocator<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -104,7 +105,7 @@ where
         Ok(())
     }
 
-    pub(crate) async fn new(io: Shared<IO>, base: SectorID, fat: FAT, meta: Meta) -> Self {
+    pub(crate) async fn new(io: S, base: SectorID, fat: FAT, meta: Meta) -> Self {
         let num_inuse =
             ((meta.percent_inuse + 1) as u64 * meta.num_clusters as u64 / 100) as u32 - 1;
         Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse }

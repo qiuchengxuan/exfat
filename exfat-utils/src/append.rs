@@ -1,18 +1,16 @@
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::Read;
-use std::ops::Deref;
 
+use exfat::SeekFrom;
 use exfat::error::{Error, OperationError};
-use exfat::io::Block;
-use exfat::{FileOrDirectory, RootDirectory as Root, SeekFrom};
 
 use crate::filepath::open;
+use crate::types::{FileOrDirectory, Root};
 
-pub fn append<B, E, IO>(root: &mut Root<B, E, IO>, path: &str, source: &str) -> Result<(), Error<E>>
+pub fn append<E: Debug, IO>(root: &mut Root<IO>, path: &str, source: &str) -> Result<(), Error<E>>
 where
-    B: Deref<Target = [Block]>,
-    E: std::fmt::Debug,
-    IO: exfat::io::IO<Block<'static> = B, Error = E>,
+    IO: exfat::io::IO<Error = E>,
 {
     let mut source_file = File::open(&source).expect("No such file");
     let mut buffer = [0u8; 4096];

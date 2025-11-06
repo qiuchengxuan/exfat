@@ -7,6 +7,7 @@ use crate::file::{FileOptions, TouchOptions};
 use crate::fs::SectorIndex;
 use crate::io::{self, Block, Wrap};
 use crate::region::data::entryset::primary::DateTime;
+use crate::sync::Share;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SeekFrom {
@@ -15,31 +16,22 @@ pub enum SeekFrom {
     Current(i64),
 }
 
-pub struct File<B: Deref<Target = [Block]>, E: Debug, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
+pub struct File<IO> {
     pub(crate) meta: MetaFileDirectory<IO>,
     pub(crate) sector_index: SectorIndex,
     pub(crate) size: u64,
     cursor: u64,
     dirty: bool,
-    #[cfg(feature = "async")]
     closed: bool,
 }
 
-impl<B: Deref<Target = [Block]>, E: Debug, IO> File<B, E, IO>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
-    pub(crate) fn new(meta: MetaFileDirectory<IO>, sector_index: SectorIndex) -> Self {
+    pub(crate) fn new(meta: MetaFileDirectory<S>, sector_index: SectorIndex) -> Self {
         let size = meta.sectors.metadata.length();
-        match () {
-            #[cfg(not(feature = "async"))]
-            () => Self { meta, sector_index, size, cursor: 0, dirty: false },
-            #[cfg(feature = "async")]
-            () => Self { meta, sector_index, size, cursor: 0, dirty: false, closed: false },
-        }
+        Self { meta, sector_index, size, cursor: 0, dirty: false, closed: false }
     }
 
     pub fn change_options(&mut self, f: impl Fn(&mut FileOptions)) {
@@ -48,7 +40,7 @@ where
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO> File<B, E, IO>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -238,16 +230,10 @@ where
 }
 
 #[cfg(any(not(feature = "async"), feature = "std"))]
-impl<B: Deref<Target = [Block]>, E: Debug, IO> Drop for File<B, E, IO>
-where
-    IO: io::IO<Block<'static> = B, Error = E>,
-{
+impl<IO> Drop for File<IO> {
     fn drop(&mut self) {
-        #[cfg(feature = "async")]
         if !self.closed {
-            panic!("Close must be explicitly called")
+            panic!("File not closed")
         }
-        #[cfg(not(feature = "async"))]
-        self.flush().and(self.meta.close()).unwrap();
     }
 }

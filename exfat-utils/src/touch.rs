@@ -1,16 +1,13 @@
-use std::ops::Deref;
+use std::fmt::Debug;
 
 use exfat::error::Error;
-use exfat::io::Block;
-use exfat::{FileOrDirectory, RootDirectory as Root};
 
-use super::filepath::open;
+use crate::filepath::open;
+use crate::types::{FileOrDirectory, Root};
 
-pub fn touch<B, E, IO>(root: &mut Root<B, E, IO>, path: &str) -> Result<(), Error<E>>
+pub fn touch<E: Debug, IO>(root: &mut Root<IO>, path: &str) -> Result<(), Error<E>>
 where
-    B: Deref<Target = [Block]>,
-    E: std::fmt::Debug,
-    IO: exfat::io::IO<Block<'static> = B, Error = E>,
+    IO: exfat::io::IO<Error = E>,
 {
     let now = chrono::Utc::now();
     let directory = root.open()?;
