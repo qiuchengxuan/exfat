@@ -15,9 +15,6 @@ use tokio::fs;
 #[cfg(all(feature = "async", feature = "tokio"))]
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-#[cfg(feature = "async")]
-use async_trait::async_trait;
-
 use super::{BLOCK_SIZE, Block};
 use crate::types::SectorID;
 
@@ -41,7 +38,6 @@ impl FileIO {
     }
 }
 
-#[cfg_attr(feature = "async", async_trait)]
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl super::IO for FileIO {
     type Block<'a> = heapless::Vec<Block, 8>;
