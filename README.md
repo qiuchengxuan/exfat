@@ -1,5 +1,4 @@
-embedded-exfat
-==============
+# embedded-exfat
 
 > An exFAT Library in rust mainly focusing on `no_std` embedded system with async support
 
@@ -13,8 +12,7 @@ otherwide enable `async` feature
 For `no_std` scenario, be aware that thread safety is provided by spin crate,
 which potenitally leads to dead lock.
 
-Using this crate
-----------------
+## Using this crate
 
 ```rust
 use std::io::Write;
@@ -46,8 +44,7 @@ loop {
 }
 ```
 
-Features
---------
+## Features
 
 * **async**
 

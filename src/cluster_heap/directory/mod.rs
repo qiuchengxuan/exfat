@@ -33,9 +33,7 @@ pub struct Directory<IO> {
 
 impl<IO> Directory<IO> {
     pub(crate) fn new(meta: MetaFileDirectory<IO>, upcase_table: Rc<UpcaseTable>) -> Self {
-        match () {
-            _ => Self { meta, upcase_table, closed: false },
-        }
+        Self { meta, upcase_table, closed: false }
     }
 }
 
@@ -317,14 +315,16 @@ where
         let file_or_directory = self.open(entryset).await?;
         let meta = match file_or_directory {
             FileOrDirectory::Directory(mut directory) => {
-                if directory.walk(|_| true).await?.is_some() {
-                    #[cfg(all(feature = "async", not(feature = "std")))]
-                    directory.close().await?;
-                    return Err(OperationError::DirectoryNotEmpty.into());
-                }
-                directory.meta.sectors.metadata.clone()
+                let is_empty = directory.walk(|_| true).await?.is_none();
+                let meta = directory.meta.sectors.metadata.clone();
+                directory.close().await?;
+                if is_empty { meta } else { return Err(OperationError::DirectoryNotEmpty.into()) }
             }
-            FileOrDirectory::File(file) => file.meta.sectors.metadata.clone(),
+            FileOrDirectory::File(file) => {
+                let meta = file.meta.sectors.metadata.clone();
+                file.close().await?;
+                meta
+            }
         };
 
         let fs_info = self.meta.sectors.fs;
@@ -373,8 +373,8 @@ where
 
 impl<S> Drop for Directory<S> {
     fn drop(&mut self) {
-        if !self.closed {
-            panic!("Directory not closed");
+        if cfg!(debug_assertions) && !self.closed {
+            panic!("Directory at {} not closed", self.meta.sectors.sector_index);
         }
     }
 }

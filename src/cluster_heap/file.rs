@@ -221,19 +221,17 @@ where
         Ok(())
     }
 
-    #[cfg(all(feature = "async", not(feature = "std")))]
-    /// `no_std` async only which must be explicitly called
+    /// must be explicitly called
     pub async fn close(mut self) -> Result<(), Error<E>> {
         self.closed = true;
         self.flush().await.and(self.meta.close().await)
     }
 }
 
-#[cfg(any(not(feature = "async"), feature = "std"))]
 impl<IO> Drop for File<IO> {
     fn drop(&mut self) {
-        if !self.closed {
-            panic!("File not closed")
+        if cfg!(debug_assertions) && !self.closed {
+            panic!("File at {} not closed", self.meta.sectors.sector_index);
         }
     }
 }

@@ -181,18 +181,20 @@ mod test {
         let output = CMD::new("/usr/sbin/mkfs.exfat").args(["test.img"]).output().unwrap();
         assert!(output.status.success());
 
-        {
-            let io = Rc::new(RefCell::new(FileIO::open("test.img").unwrap()));
-            let mut exfat = super::ExFAT::new(io).unwrap();
-            let mut root = exfat.root_directory().unwrap();
-            root.validate_upcase_table_checksum().unwrap();
-            root.update_usage().unwrap();
-            let mut root_dir = root.open().unwrap();
-            root_dir.create("ut.bin", false).unwrap();
-            root_dir.find("ut.bin").unwrap().unwrap();
-            let entry = root_dir.find("ut.bin").unwrap().unwrap();
-            root_dir.delete(&entry).unwrap();
-        }
+        let runner = || -> Result<(), Box<dyn std::error::Error>> {
+            let io = Rc::new(RefCell::new(FileIO::open("test.img")?));
+            let mut exfat = super::ExFAT::new(io)?;
+            let mut root = exfat.root_directory()?;
+            root.validate_upcase_table_checksum()?;
+            root.update_usage()?;
+            let mut root_dir = root.open()?;
+            root_dir.create("ut.bin", false)?;
+            root_dir.find("ut.bin")?.unwrap();
+            let entry = root_dir.find("ut.bin")?.unwrap();
+            root_dir.delete(&entry)?;
+            Ok(root_dir.close()?)
+        };
+        runner().unwrap();
 
         CMD::new("rm").args(["-f", "test.img"]).output().unwrap();
     }
