@@ -20,17 +20,7 @@ fn lsb<T: Copy + From<u8> + Sub<T, Output = T> + BitXor<T, Output = T>>(bits: T)
 
 #[inline]
 fn bit_to_offset(bit: u8) -> u8 {
-    match bit {
-        0b00000001 => 0,
-        0b00000010 => 1,
-        0b00000100 => 2,
-        0b00001000 => 3,
-        0b00010000 => 4,
-        0b00100000 => 5,
-        0b01000000 => 6,
-        0b10000000 => 7,
-        _ => unreachable!("Not a single bit or is zero"),
-    }
+    u8::trailing_zeros(bit) as u8
 }
 
 #[derive(Copy, Clone)]
@@ -57,6 +47,65 @@ impl Meta {
         let percent_inuse = boot_sector.percent_inuse;
         Ok(Self { size, num_clusters, sector_size_shift, percent_inuse })
     }
+
+    #[inline]
+    fn sector_size(&self) -> u32 {
+        1 << self.sector_size_shift
+    }
+
+    #[inline]
+    fn num_sectors(&self) -> u32 {
+        self.size / self.sector_size()
+    }
+
+    #[inline]
+    fn num_inuse(&self) -> u32 {
+        ((self.percent_inuse + 1) as u64 * self.num_clusters as u64 / 100) as u32 - 1
+    }
+}
+
+#[derive(Copy, Clone, derive_more::Display)]
+#[display("{cluster}")]
+struct Position {
+    meta: Meta,
+    base: SectorID,
+    pub cluster: ClusterID,
+}
+
+impl Position {
+    #[inline]
+    fn sector(&self) -> SectorID {
+        self.base + self.cluster.offset() / 8 / self.meta.sector_size()
+    }
+
+    #[inline]
+    fn byte(&self) -> usize {
+        ((self.cluster.offset() / 8) % self.meta.sector_size()) as usize
+    }
+
+    fn bit(&self) -> usize {
+        (self.cluster.offset() % 8) as usize
+    }
+
+    #[inline]
+    fn out_of_range(&self) -> bool {
+        self.cluster.offset() / 8 >= self.meta.size
+    }
+
+    fn bits(&self, block: &[Block]) -> u8 {
+        let index = self.byte();
+        block[index / 512][index % 512]
+    }
+
+    fn is_clear(&self, block: &[Block]) -> Option<u8> {
+        let bits = self.bits(block);
+        if bits & (1 << self.bit()) == 0 { Some(bits) } else { None }
+    }
+
+    fn advance(&mut self) -> Self {
+        self.cluster += 1u32;
+        *self
+    }
 }
 
 #[derive(Clone)]
@@ -74,23 +123,12 @@ impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> DumbAllocator<S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
-    #[inline]
-    fn sector_size(&self) -> u32 {
-        1 << self.meta.sector_size_shift
-    }
-
-    #[inline]
-    fn num_sectors(&self) -> u32 {
-        self.meta.size / self.sector_size()
-    }
-
     pub(crate) async fn update_usage(&mut self) -> Result<(), Error<E>> {
-        let sector_size = self.sector_size();
+        let sector_size = self.meta.sector_size();
         let mut num_inuse = 0;
         let mut io = self.io.acquire().await.wrap();
-        for sector_offset in 0..self.num_sectors() {
-            let sector_id = self.base + sector_offset;
-            let sector = io.read(sector_id).await?;
+        for sector_offset in 0..self.meta.num_sectors() {
+            let sector = io.read(self.base + sector_offset).await?;
             let blocks: &[[usize; BITMAP_SIZE]] = unsafe { transmute(&*sector) };
             for i in 0..(sector_size as usize / BLOCK_SIZE) {
                 let sum = blocks[i].iter().map(|bits| bits.count_ones()).sum::<u32>();
@@ -106,37 +144,31 @@ where
     }
 
     pub(crate) async fn new(io: S, base: SectorID, fat: FAT, meta: Meta) -> Self {
-        let num_inuse =
-            ((meta.percent_inuse + 1) as u64 * meta.num_clusters as u64 / 100) as u32 - 1;
-        Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse }
+        Self { io, base, fat, meta, cursor: ClusterID::FIRST, num_inuse: meta.num_inuse() }
     }
 
-    async fn is_available(&mut self, cluster_id: ClusterID) -> Result<Option<u8>, Error<E>> {
-        let offset = u32::from(cluster_id) - 2;
-        let (byte_offset, bit_offset) = (offset / 8, offset as u8 % 8);
-        if byte_offset >= self.meta.size {
+    fn position(&self, cluster: ClusterID) -> Position {
+        Position { meta: self.meta, base: self.base, cluster }
+    }
+
+    async fn is_available(&mut self, position: Position) -> Result<Option<u8>, Error<E>> {
+        if position.out_of_range() {
             return Ok(None);
         }
-        let sector_size = 1 << self.meta.sector_size_shift;
-        let sector_id = self.base + offset / 8 / sector_size;
         let mut io = self.io.acquire().await.wrap();
-        let sector = io.read(sector_id).await?;
-        let index = (byte_offset % sector_size) as usize;
-        let bits = sector[index / 512][index % 512];
-        Ok(if bits & (1 << bit_offset) > 0 { Some(bits) } else { None })
+        Ok(position.is_clear(&io.read(position.sector()).await?))
     }
 
     async fn find_available(&mut self) -> Result<(u32, u8), Error<E>> {
         let mut io = self.io.acquire().await.wrap();
-        let sector_size = 1 << self.meta.sector_size_shift;
-        let mut sector_id = self.base + self.cursor.offset() / sector_size;
+        let mut sector_id = self.base + self.cursor.offset() / self.meta.sector_size();
         let mut sector = io.read(sector_id).await?;
         for i in self.cursor.offset()..self.meta.size {
-            if i != self.cursor.offset() && i % sector_size == 0 {
+            if i != self.cursor.offset() && i % self.meta.sector_size() == 0 {
                 sector_id += 1u64;
                 sector = io.read(sector_id).await?;
             }
-            let index = (i % sector_size) as usize;
+            let index = (i % self.meta.sector_size()) as usize;
             let bits = sector[index / 512][index % 512];
             if bits != u8::MAX {
                 return Ok((i, bits));
@@ -164,80 +196,69 @@ where
         if self.meta.percent_inuse == 100 {
             return Err(AllocationError::NoMoreCluster.into());
         }
-        let mut cursor = nofrag.unwrap_or(self.cursor);
+        let mut pos = self.position(nofrag.unwrap_or(self.cursor));
         let mut bits = 0xFFu8;
 
-        let sector_size = 1 << self.meta.sector_size_shift;
-        if let Some(byte) = self.is_available(cursor + 1u32).await? {
+        if let Some(byte) = self.is_available(pos.advance()).await? {
             bits = byte;
         } else if nofrag.is_some() {
             return Err(AllocationError::Fragment.into());
         }
         if bits == 0xFF {
             let (byte_offset, bits) = self.find_available().await?;
-            cursor = ClusterID::FIRST + byte_offset * 8 + bit_to_offset(lsb(!bits));
+            pos.cluster = ClusterID::FIRST + byte_offset * 8 + bit_to_offset(lsb(!bits));
         };
-        let offset = cursor.offset();
-        let sector_id = self.base + offset / sector_size;
-        let offset = (offset / 8) % sector_size;
-        bits |= 1 << (offset % 8);
-        self.io.acquire().await.wrap().write(sector_id, offset as usize, &[bits; 1]).await?;
+        bits |= 1 << pos.bit();
+        self.io.acquire().await.wrap().write(pos.sector(), pos.byte(), &[bits; 1]).await?;
         self.num_inuse += 1;
-        self.cursor = cursor + (bits == 0xFF) as u32;
+        self.cursor = pos.cluster + (bits == 0xFF) as u32;
         self.ensure_percent_inuse().await?;
-        trace!("Allocated cluster {}", cursor);
-        Ok(cursor)
+        trace!("Allocated cluster {}", pos.cluster);
+        Ok(pos.cluster)
     }
 
-    async fn release_one(&mut self, cluster_id: ClusterID) -> Result<(), Error<E>> {
-        trace!("Release cluster id {}", cluster_id);
-        let cluster_offset = cluster_id.offset();
-        let byte_offset = cluster_offset / 8;
-        if byte_offset >= self.meta.size {
-            warn!("Cluster ID {} out of range", cluster_id);
+    async fn release_one(&mut self, position: Position) -> Result<(), Error<E>> {
+        trace!("Release cluster {}", position);
+        if position.out_of_range() {
+            warn!("Cluster ID {} out of range", position);
             return Err(DataError::FATChain.into());
         }
         let mut io = self.io.acquire().await.wrap();
-        let sector_size = 1 << self.meta.sector_size_shift;
-        let sector_offset = byte_offset / sector_size;
-        let sector_id = self.base + sector_offset;
-        let sector = io.read(sector_id).await?;
-        let offset = (byte_offset % sector_size) as usize;
-        let bit_offset = cluster_offset % 8;
-        let byte = sector[offset / 512][offset % 512] & !(1 << bit_offset);
-        io.write(sector_id, offset, &[byte; 1]).await?;
+        let sector = io.read(position.sector()).await?;
+        let byte = position.bits(&sector) & !(1 << position.bit());
+        io.write(position.sector(), position.byte(), &[byte; 1]).await?;
         Ok(())
     }
 
-    pub async fn release(&mut self, cluster_id: ClusterID, chain: bool) -> Result<(), Error<E>> {
-        trace!("Release clusters starts with cluster id {}", cluster_id);
+    pub async fn release(&mut self, cluster: ClusterID, chain: bool) -> Result<(), Error<E>> {
+        let mut position = self.position(cluster);
+        trace!("Release clusters starts with cluster id {}", position);
         if !chain {
-            self.release_one(cluster_id).await?;
+            self.release_one(position).await?;
             self.ensure_percent_inuse().await?;
             return self.io.acquire().await.wrap().flush().await;
         }
-        let mut cluster_id = cluster_id;
-        while cluster_id.valid() {
-            self.release_one(cluster_id).await?;
+        while position.cluster.valid() {
+            self.release_one(position).await?;
             self.num_inuse -= 1;
-            let sector_id = match self.fat.fat_sector_id(cluster_id) {
+            let sector_id = match self.fat.fat_sector_id(position.cluster) {
                 Some(id) => id,
                 None => return Ok(()),
             };
             let mut io = self.io.acquire().await.wrap();
             let sector = io.read(sector_id).await?;
-            let entry = match self.fat.next_cluster_id(&sector, cluster_id) {
+            let entry = match self.fat.next_cluster_id(&sector, position.cluster) {
                 Ok(entry) => entry,
                 Err(value) => {
-                    warn!("Invalid next entry {:X} for cluster id {}", value, cluster_id);
+                    warn!("Invalid next entry {:X} for cluster id {}", value, position);
                     return Err(DataError::FATChain.into());
                 }
             };
             match entry {
-                Entry::Next(id) => cluster_id = id.into(),
+                Entry::Next(id) => position.cluster = id.into(),
                 Entry::Last => break,
                 Entry::BadCluster => {
-                    warn!("Encountered bad cluster for cluster-id {}", cluster_id);
+                    warn!("Encountered bad cluster for cluster id {}", position);
                     break;
                 }
             }
