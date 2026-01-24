@@ -36,17 +36,13 @@ pub trait Write: ErrorType {
     fn flush(&mut self) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
-#[cfg(not(feature = "async"))]
 pub trait Read: ErrorType {
     type Block<'a>: Deref<Target = [Block]> + 'a;
 
+    #[cfg(not(feature = "async"))]
     fn read<'a>(&mut self, id: SectorID) -> Result<Self::Block<'a>, Self::Error>;
-}
 
-#[cfg(feature = "async")]
-pub trait Read: ErrorType {
-    type Block<'a>: Deref<Target = [Block]> + 'a;
-
+    #[cfg(feature = "async")]
     fn read<'a>(
         &mut self, id: SectorID,
     ) -> impl Future<Output = Result<Self::Block<'a>, Self::Error>>;

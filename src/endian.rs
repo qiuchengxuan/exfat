@@ -12,14 +12,12 @@ macro_rules! define {
         }
 
         impl Into<$type> for Little<$type> {
-            #[inline]
             fn into(self) -> $type {
                 <$type>::from_le(self.0)
             }
         }
 
         impl From<$type> for Little<$type> {
-            #[inline]
             fn from(t: $type) -> Self {
                 Self(<$type>::to_le(t))
             }

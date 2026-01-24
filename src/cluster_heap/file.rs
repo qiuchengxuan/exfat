@@ -162,8 +162,8 @@ where
             return Ok(sector_remain);
         }
         if self.cursor >= capacity {
-            let cluster_id = self.meta.allocate(self.sector_index.cluster_id).await?;
-            self.sector_index = SectorIndex::new(cluster_id, 0);
+            let cluster = self.meta.allocate(self.sector_index.cluster, 1).await?.base;
+            self.sector_index = SectorIndex::new(cluster, 0);
             capacity = self.meta.sectors.metadata.capacity();
         }
         trace!("Write to sector-ref {}", self.sector_index);
