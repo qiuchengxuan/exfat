@@ -47,7 +47,7 @@ where
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
         let sector_index = SectorIndex::new(id, 0);
         let mut metadata = Metadata::new(Default::default());
-        metadata.stream_extension.general_secondary_flags.set_fat_chain();
+        metadata.stream_extension.general_secondary_flags.set_fat_chain(true);
         let mut sectors = FileSectors { io: io.clone(), fat, fs, metadata, sector_index };
         let mut iter = EntryIter::new(&mut sectors).await?;
         while let Some(entry) = iter.next().await? {

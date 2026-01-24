@@ -263,7 +263,7 @@ where
             let sector_index = match self.meta.sectors.next(sector_index).await {
                 Ok(sector_index) => sector_index,
                 Err(Error::Operation(OperationError::EOF)) => {
-                    SectorIndex::new(self.meta.allocate(sector_index.cluster_id).await?, 0)
+                    SectorIndex::new(self.meta.allocate(sector_index.cluster, 1).await?.base, 0)
                 }
                 Err(e) => return Err(e),
             };

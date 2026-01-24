@@ -4,6 +4,7 @@ use core::ops::Deref;
 use super::context::Context;
 use super::entryset::EntryID;
 use super::metadata::Metadata;
+use crate::cluster_heap::allocation_bitmap::Clusters;
 use crate::error::{AllocationError, DataError, Error, OperationError};
 use crate::fat;
 use crate::file::{FileOptions, TouchOptions};
@@ -13,7 +14,22 @@ use crate::region::data::entryset::primary::DateTime;
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
 use crate::region::fat::Entry;
 use crate::sync::{Share, Shared};
-use crate::types::ClusterID;
+use crate::types::{ClusterID, SectorID};
+
+struct Locator {
+    pub fat: fat::Meta,
+    pub cluster: ClusterID,
+}
+
+impl Locator {
+    fn advance(&mut self) {
+        self.cluster = self.cluster + 1u32;
+    }
+
+    fn sector(&self) -> SectorID {
+        self.fat.fat_sector_id(self.cluster).unwrap()
+    }
+}
 
 pub struct FileSectors<IO> {
     pub io: IO,
@@ -30,23 +46,23 @@ where
 {
     pub async fn next(&mut self, sector_index: SectorIndex) -> Result<SectorIndex, Error<E>> {
         let fat_chain = self.metadata.stream_extension.general_secondary_flags.fat_chain();
-        if sector_index.sector_index != self.fs.sectors_per_cluster() {
-            return Ok(sector_index.next(self.fs.sectors_per_cluster_shift));
+        if sector_index.sector != self.fs.sectors_per_cluster() {
+            return Ok(sector_index.next(self.fs.sectors_per_cluster()));
         }
         if !fat_chain {
             let num_clusters = (self.metadata.length() / self.fs.cluster_size() as u64) as u32;
-            let max_cluster_id = self.sector_index.cluster_id + num_clusters;
-            if sector_index.cluster_id + 1u32 >= max_cluster_id {
+            let max_cluster_id = self.sector_index.cluster + num_clusters;
+            if sector_index.cluster + 1u32 >= max_cluster_id {
                 return Err(OperationError::EOF.into());
             }
-            return Ok(sector_index.next(self.fs.sectors_per_cluster_shift));
+            return Ok(sector_index.next(self.fs.sectors_per_cluster()));
         }
-        let cluster_id = sector_index.cluster_id;
+        let cluster_id = sector_index.cluster;
         let option = self.fat.fat_sector_id(cluster_id);
         let sector_id = option.ok_or(Error::Data(DataError::FATChain))?;
         let mut io = self.io.acquire().await.wrap();
         let block = io.read(sector_id).await?;
-        match self.fat.next_cluster_id(&block, sector_index.cluster_id) {
+        match self.fat.next_cluster_id(&block, sector_index.cluster) {
             Ok(Entry::Next(cluster_id)) => Ok(SectorIndex::new(cluster_id, 0)),
             Ok(Entry::Last) => Err(OperationError::EOF.into()),
             _ => Err(DataError::FATChain.into()),
@@ -85,40 +101,46 @@ where
         Ok(())
     }
 
-    pub async fn allocate(&mut self, last: ClusterID) -> Result<ClusterID, Error<E>> {
-        trace!("Allocate cluster with last cluster {}", last);
-        if !self.sectors.metadata.stream_extension.general_secondary_flags.allocation_possible() {
+    pub async fn allocate(&mut self, last: ClusterID, size: u32) -> Result<Clusters, Error<E>> {
+        trace!("Allocate clusters starts from {}", last);
+        let flags = self.sectors.metadata.stream_extension.general_secondary_flags;
+        if !flags.allocation_possible() {
             return Err(AllocationError::NotPossible.into());
         }
         let nofrag = if self.options.dont_fragment { Some(last) } else { None };
         let mut context = self.context.acquire().await;
-        let cluster_id = context.allocation_bitmap.allocate(nofrag).await?;
-
+        let allocation = context.allocation_bitmap.allocate(nofrag, size).await?;
         let cluster_size = self.sectors.fs.cluster_size() as u64;
         let metadata = &mut self.sectors.metadata;
-
-        let fat_chain = metadata.stream_extension.general_secondary_flags.fat_chain();
         if !last.valid() {
-            metadata.stream_extension.first_cluster = u32::from(cluster_id).into();
-            metadata.stream_extension.general_secondary_flags.clear_fat_chain();
-        } else if last + 1u32 != cluster_id || fat_chain {
+            metadata.stream_extension.first_cluster = u32::from(allocation.base).into();
+        }
+        let contiguous = last + 1u32 == allocation.base;
+        let chained = last.valid() && (flags.fat_chain() || !contiguous) || allocation.bits > 0;
+        metadata.stream_extension.general_secondary_flags.set_fat_chain(chained);
+        if chained {
             let mut io = self.sectors.io.acquire().await.wrap();
-            if !fat_chain && metadata.capacity() > cluster_size {
-                let first = self.sectors.sector_index.cluster_id;
-                for i in 0..(metadata.capacity() / cluster_size - 1) {
-                    let cluster_id = first + i as u32;
-                    let next = cluster_id + 1u32;
-                    let sector_id = self.sectors.fat.fat_sector_id(cluster_id).unwrap();
+            if !last.valid() && metadata.capacity() > cluster_size {
+                let first = self.sectors.sector_index.cluster;
+                let mut locator = Locator { fat: self.sectors.fat, cluster: first };
+                for _ in 0..(metadata.capacity() / cluster_size - 1) {
+                    let next = locator.cluster + 1u32;
                     let bytes = u32::to_le_bytes(next.into());
-                    io.write(sector_id, self.sectors.fat.offset(next), &bytes).await?;
+                    io.write(locator.sector(), self.sectors.fat.offset(next), &bytes).await?;
+                    locator.advance();
                 }
-                metadata.stream_extension.general_secondary_flags.set_fat_chain();
+            }
+            let mut last = last;
+            let mut iter = allocation;
+            while let Some(cluster) = iter.next() {
+                let sector_id = self.sectors.fat.fat_sector_id(last).unwrap();
+                let bytes = u32::to_le_bytes(cluster.into());
+                io.write(sector_id, self.sectors.fat.offset(last), &bytes).await?;
+                last = cluster;
             }
             let sector_id = self.sectors.fat.fat_sector_id(last).unwrap();
-            let bytes = u32::to_le_bytes(cluster_id.into());
-            io.write(sector_id, self.sectors.fat.offset(last), &bytes).await?;
             let bytes = u32::to_ne_bytes(Entry::Last.into());
-            io.write(sector_id, self.sectors.fat.offset(cluster_id), &bytes).await?;
+            io.write(sector_id, self.sectors.fat.offset(last), &bytes).await?;
         }
         if metadata.file_directory.file_attributes().directory() > 0 {
             let length = metadata.length() + cluster_size;
@@ -126,7 +148,7 @@ where
         }
         metadata.stream_extension.data_length = (metadata.capacity() + cluster_size).into();
         metadata.update_checksum();
-        Ok(cluster_id)
+        Ok(allocation)
     }
 }
 
@@ -137,7 +159,7 @@ where
 {
     pub async fn sync(&mut self) -> Result<(), Error<E>> {
         let metadata = &mut self.sectors.metadata;
-        if !metadata.entry_index.sector_index.cluster_id.valid() {
+        if !metadata.entry_index.sector_index.cluster.valid() {
             // Probably root directory
             return Ok(());
         }

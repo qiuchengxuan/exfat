@@ -15,9 +15,13 @@ impl Meta {
         Self { sector_size_shift, offset, length }
     }
 
+    fn sector_size(&self) -> u32 {
+        1 << self.sector_size_shift
+    }
+
     pub fn fat_sector_id(&self, cluster_id: ClusterID) -> Option<SectorID> {
         let index: u32 = cluster_id.into();
-        let sector_index = index / ((1 << self.sector_size_shift as u32) / 4);
+        let sector_index = index / (self.sector_size() / 4);
         if sector_index >= self.length {
             return None;
         }
@@ -26,13 +30,12 @@ impl Meta {
 
     pub fn offset(&self, cluster_id: ClusterID) -> usize {
         let index: u32 = cluster_id.into();
-        index as usize * 4 % (1 << self.sector_size_shift)
+        (index * 4 % self.sector_size()) as usize
     }
 
     pub fn next_cluster_id(&self, sector: &[Block], cluster_id: ClusterID) -> Result<Entry, u32> {
-        let index: u32 = cluster_id.into();
-        let offset = index as usize % ((1 << self.sector_size_shift) / 4);
-        let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[offset / 128]) };
-        Entry::try_from(u32::from_le(array[offset % 128]))
+        let index = self.offset(cluster_id) / 4;
+        let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[index / 128]) };
+        Entry::try_from(u32::from_le(array[index % 128]))
     }
 }

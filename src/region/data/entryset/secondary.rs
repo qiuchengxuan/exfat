@@ -17,12 +17,8 @@ impl GeneralSecondaryFlags {
         (self.0 & 0b10) == 0
     }
 
-    pub fn set_fat_chain(&mut self) {
-        self.0 &= !0b10
-    }
-
-    pub fn clear_fat_chain(&mut self) {
-        self.0 |= 0b10
+    pub fn set_fat_chain(&mut self, chain: bool) {
+        self.0 = (self.0 & !0b10) | ((chain as u8) << 1)
     }
 
     pub fn allocation_possible(&self) -> bool {

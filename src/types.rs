@@ -44,6 +44,14 @@ impl<I: Into<u32>> core::ops::Add<I> for ClusterID {
     }
 }
 
+impl<I: Into<u32>> core::ops::Sub<I> for ClusterID {
+    type Output = Self;
+
+    fn sub(self, rhs: I) -> Self {
+        Self(self.0 - rhs.into())
+    }
+}
+
 impl<I: Into<u32>> core::ops::AddAssign<I> for ClusterID {
     fn add_assign(&mut self, rhs: I) {
         self.0 += rhs.into()
