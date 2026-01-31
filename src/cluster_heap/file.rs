@@ -16,8 +16,8 @@ pub enum SeekFrom {
     Current(i64),
 }
 
-pub struct File<IO> {
-    pub(crate) meta: MetaFileDirectory<IO>,
+pub struct File<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> {
+    pub(crate) meta: MetaFileDirectory<S>,
     pub(crate) sector_index: SectorIndex,
     pub(crate) size: u64,
     cursor: u64,
@@ -25,7 +25,7 @@ pub struct File<IO> {
     closed: bool,
 }
 
-impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<S>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<E, IO, S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -40,7 +40,36 @@ where
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<S>
+impl<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> File<E, IO, S> {
+    /// Flush data write operations
+    pub async fn sync_data(&mut self) -> Result<(), Error<E>> {
+        if self.dirty {
+            self.meta.sectors.io.acquire().await.flush().await.map_err(|e| Error::IO(e))?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+
+    /// Flush data write operations and metadata changes
+    pub async fn sync_all(&mut self) -> Result<(), Error<E>> {
+        self.sync_data().await?;
+        self.meta.sync().await
+    }
+
+    /// Alias of sync_all
+    pub async fn flush(&mut self) -> Result<(), Error<E>> {
+        self.sync_all().await
+    }
+
+    /// Must be explicitly called in async senario
+    pub async fn close(mut self) -> Result<(), Error<E>> {
+        self.closed = true;
+        self.flush().await.and(self.meta.close().await)
+    }
+}
+
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<E, IO, S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -159,26 +188,6 @@ where
         Ok(())
     }
 
-    /// Flush data write operations
-    pub async fn sync_data(&mut self) -> Result<(), Error<E>> {
-        if self.dirty {
-            self.meta.sectors.io.acquire().await.wrap().flush().await?;
-            self.dirty = false;
-        }
-        Ok(())
-    }
-
-    /// Flush data write operations and metadata changes
-    pub async fn sync_all(&mut self) -> Result<(), Error<E>> {
-        self.sync_data().await?;
-        self.meta.sync().await
-    }
-
-    /// Alias of sync_all
-    pub async fn flush(&mut self) -> Result<(), Error<E>> {
-        self.sync_all().await
-    }
-
     /// Change current cursor position
     pub async fn seek(&mut self, seek_from: SeekFrom) -> Result<u64, Error<E>> {
         let option = match seek_from {
@@ -220,15 +229,14 @@ where
         self.size = size;
         Ok(())
     }
-
-    /// must be explicitly called
-    pub async fn close(mut self) -> Result<(), Error<E>> {
-        self.closed = true;
-        self.flush().await.and(self.meta.close().await)
-    }
 }
 
-impl<IO> Drop for File<IO> {
+impl<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> Drop for File<E, IO, S> {
+    #[cfg(not(feature = "async"))]
+    fn drop(&mut self) {
+        self.flush().and(self.meta.close()).unwrap()
+    }
+    #[cfg(feature = "async")]
     fn drop(&mut self) {
         if cfg!(debug_assertions) && !self.closed {
             panic!("File at {} not closed", self.meta.sectors.sector_index);

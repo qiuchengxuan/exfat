@@ -14,36 +14,47 @@ pub(crate) fn flatten(sector: &[Block]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(&sector[0][0], sector.len() * 512) }
 }
 
-pub trait IO {
-    type Block<'a>: Deref<Target = [Block]> + 'a;
+pub trait ErrorType {
     type Error: Debug;
+}
 
-    /// Default to 9, which means 512B
-    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error>;
-
-    #[cfg(not(feature = "async"))]
-    fn read<'a>(&mut self, id: SectorID) -> Result<Self::Block<'a>, Self::Error>;
-    #[cfg(not(feature = "async"))]
+#[cfg(not(feature = "async"))]
+pub trait Write: ErrorType {
     /// Caller guarantees bytes.len() <= SECTOR_SIZE - offset
     fn write(&mut self, id: SectorID, offset: usize, data: &[u8]) -> Result<(), Self::Error>;
-    #[cfg(not(feature = "async"))]
-    fn flush(&mut self) -> Result<(), Self::Error>;
 
-    #[cfg(feature = "async")]
-    fn read<'a>(
-        &mut self,
-        id: SectorID,
-    ) -> impl Future<Output = Result<Self::Block<'a>, Self::Error>>;
-    #[cfg(feature = "async")]
+    fn flush(&mut self) -> Result<(), Self::Error>;
+}
+
+#[cfg(feature = "async")]
+pub trait Write: ErrorType {
     /// Caller guarantees bytes.len() <= SECTOR_SIZE - offset
     fn write(
-        &mut self,
-        id: SectorID,
-        offset: usize,
-        data: &[u8],
+        &mut self, id: SectorID, offset: usize, data: &[u8],
     ) -> impl Future<Output = Result<(), Self::Error>>;
-    #[cfg(feature = "async")]
+
     fn flush(&mut self) -> impl Future<Output = Result<(), Self::Error>>;
+}
+
+#[cfg(not(feature = "async"))]
+pub trait Read: ErrorType {
+    type Block<'a>: Deref<Target = [Block]> + 'a;
+
+    fn read<'a>(&mut self, id: SectorID) -> Result<Self::Block<'a>, Self::Error>;
+}
+
+#[cfg(feature = "async")]
+pub trait Read: ErrorType {
+    type Block<'a>: Deref<Target = [Block]> + 'a;
+
+    fn read<'a>(
+        &mut self, id: SectorID,
+    ) -> impl Future<Output = Result<Self::Block<'a>, Self::Error>>;
+}
+
+pub trait IO: Read + Write {
+    /// Default to 9, which means 512B
+    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error>;
 }
 
 pub(crate) struct Wrapper<D>(D);

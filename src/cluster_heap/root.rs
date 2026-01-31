@@ -134,7 +134,7 @@ where
         self.volumn_label.as_ref().map(|label| label.as_str())
     }
 
-    pub async fn open(&mut self) -> Result<Directory<S>, Error<E>> {
+    pub async fn open(&mut self) -> Result<Directory<E, IO, S>, Error<E>> {
         let sectors = &self.meta.sectors;
         let sectors =
             FileSectors { io: sectors.io.clone(), metadata: sectors.metadata.clone(), ..*sectors };

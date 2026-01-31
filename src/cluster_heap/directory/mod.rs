@@ -25,25 +25,25 @@ use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
 pub(crate) use entry_iter::EntryIter;
 
-pub struct Directory<IO> {
-    pub(crate) meta: MetaFileDirectory<IO>,
+pub struct Directory<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> {
+    pub(crate) meta: MetaFileDirectory<S>,
     pub(crate) upcase_table: Rc<UpcaseTable>,
     closed: bool,
 }
 
-impl<IO> Directory<IO> {
-    pub(crate) fn new(meta: MetaFileDirectory<IO>, upcase_table: Rc<UpcaseTable>) -> Self {
+impl<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> Directory<E, IO, S> {
+    pub(crate) fn new(meta: MetaFileDirectory<S>, upcase_table: Rc<UpcaseTable>) -> Self {
         Self { meta, upcase_table, closed: false }
     }
 }
 
-pub enum FileOrDirectory<IO> {
-    File(File<IO>),
-    Directory(Directory<IO>),
+pub enum FileOrDirectory<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> {
+    File(File<E, IO, S>),
+    Directory(Directory<E, IO, S>),
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> Directory<S>
+impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> Directory<E, IO, S>
 where
     IO: io::IO<Block<'static> = B, Error = E>,
 {
@@ -156,7 +156,9 @@ where
     }
 
     /// Open a file or directory
-    pub async fn open(&mut self, entryset: &EntrySet) -> Result<FileOrDirectory<S>, Error<E>> {
+    pub async fn open(
+        &mut self, entryset: &EntrySet,
+    ) -> Result<FileOrDirectory<E, IO, S>, Error<E>> {
         trace!("Open {} with entry index {}", entryset.name(), entryset.entry_index);
         let mut context = self.meta.context.acquire().await;
         if !context.opened_entries.add(entryset.id(&self.meta.sectors.fs)) {
@@ -364,14 +366,19 @@ where
         self.meta.sectors.io.acquire().await.wrap().flush().await
     }
 
-    /// must be explicitly called
+    /// Must be explicitly called in async senario
     pub async fn close(mut self) -> Result<(), Error<E>> {
         self.closed = true;
         self.meta.close().await
     }
 }
 
-impl<S> Drop for Directory<S> {
+impl<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> Drop for Directory<E, IO, S> {
+    #[cfg(not(feature = "async"))]
+    fn drop(&mut self) {
+        self.meta.close().unwrap()
+    }
+    #[cfg(feature = "async")]
     fn drop(&mut self) {
         if cfg!(debug_assertions) && !self.closed {
             panic!("Directory at {} not closed", self.meta.sectors.sector_index);

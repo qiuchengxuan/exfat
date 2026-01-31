@@ -2,3 +2,4 @@ edition = "2024"
 newline_style = "Unix"
 use_field_init_shorthand = true
 use_small_heuristics = "Max"
+fn_params_layout = "Compressed"

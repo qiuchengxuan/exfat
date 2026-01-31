@@ -38,15 +38,27 @@ impl FileIO {
     }
 }
 
-#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl super::IO for FileIO {
-    type Block<'a> = heapless::Vec<Block, 8>;
+impl super::ErrorType for FileIO {
     type Error = std::io::Error;
+}
 
-    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
-        self.sector_size_shift = shift;
-        Ok(())
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
+impl super::Write for FileIO {
+    async fn write(&mut self, sector: SectorID, offset: usize, buf: &[u8]) -> Result<(), Error> {
+        let sector_size = 1 << self.sector_size_shift;
+        let seek = SeekFrom::Start(u64::from(sector) * sector_size + offset as u64);
+        self.file.seek(seek).await?;
+        self.file.write_all(buf).await.map(|_| ())
     }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.file.flush().await
+    }
+}
+
+#[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
+impl super::Read for FileIO {
+    type Block<'a> = heapless::Vec<Block, 8>;
 
     async fn read<'a>(&mut self, sector: SectorID) -> Result<Self::Block<'a>, Self::Error> {
         let sector_size: usize = 1 << self.sector_size_shift;
@@ -59,15 +71,11 @@ impl super::IO for FileIO {
         self.file.read_exact(buf).await?;
         Ok(block)
     }
+}
 
-    async fn write(&mut self, sector: SectorID, offset: usize, buf: &[u8]) -> Result<(), Error> {
-        let sector_size = 1 << self.sector_size_shift;
-        let seek = SeekFrom::Start(u64::from(sector) * sector_size + offset as u64);
-        self.file.seek(seek).await?;
-        self.file.write_all(buf).await.map(|_| ())
-    }
-
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.file.flush().await
+impl super::IO for FileIO {
+    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
+        self.sector_size_shift = shift;
+        Ok(())
     }
 }
