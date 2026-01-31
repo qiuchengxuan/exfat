@@ -1,6 +1,6 @@
 use derive_more::Display;
 
-use crate::types::ClusterID;
+use crate::types::Cluster;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Meta {
@@ -30,7 +30,7 @@ impl Meta {
 #[derive(Copy, Clone, Debug, Default, Display)]
 #[display("{}:{}", cluster, index)]
 pub struct SectorIndex {
-    pub cluster: ClusterID,
+    pub cluster: Cluster,
     pub index: u32,
 }
 
@@ -44,7 +44,7 @@ impl SectorIndex {
         meta.heap_offset as u64 + num_sectors + self.index as u64
     }
 
-    pub fn new(cluster: ClusterID, index: u32) -> Self {
+    pub fn new(cluster: Cluster, index: u32) -> Self {
         Self { cluster, index }
     }
 

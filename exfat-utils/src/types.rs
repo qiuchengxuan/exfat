@@ -4,5 +4,5 @@ use exfat::RootDirectory;
 
 pub type Shared<IO> = Rc<RefCell<IO>>;
 pub type Root<IO> = RootDirectory<Shared<IO>>;
-pub type Directory<IO> = exfat::Directory<Shared<IO>>;
-pub type FileOrDirectory<IO> = exfat::FileOrDirectory<Shared<IO>>;
+pub type Directory<E, IO> = exfat::Directory<E, IO, Shared<IO>>;
+pub type FileOrDirectory<E, IO> = exfat::FileOrDirectory<E, IO, Shared<IO>>;

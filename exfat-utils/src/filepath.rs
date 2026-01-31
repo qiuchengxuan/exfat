@@ -1,28 +1,29 @@
 use std::fmt::Debug;
+use std::ops::Deref;
 
 use exfat::error::{Error, OperationError};
+use exfat::io::Block;
 
-use crate::types::{Directory, FileOrDirectory};
+use crate::types::{Directory, FileOrDirectory as FD};
 
 const NOT_FOUND: OperationError = OperationError::NotFound;
 
-pub fn open<E: Debug, IO>(
-    mut dir: Directory<IO>,
-    path: &str,
-) -> Result<FileOrDirectory<IO>, Error<E>>
+pub fn open<B, E, IO>(mut dir: Directory<E, IO>, path: &str) -> Result<FD<E, IO>, Error<E>>
 where
-    IO: exfat::io::IO<Error = E>,
+    B: Deref<Target = [Block]>,
+    E: Debug,
+    IO: for<'a> exfat::io::IO<Block<'a> = B, Error = E>,
 {
     let path = path.trim().trim_matches('/');
     if path == "" {
-        return Ok(FileOrDirectory::Directory(dir));
+        return Ok(FD::Directory(dir));
     }
     if let Some((parent, _)) = path.rsplit_once('/') {
         for name in parent.split('/') {
             let entryset = dir.find(name)?.ok_or(Error::Operation(NOT_FOUND))?;
             dir = match dir.open(&entryset)? {
-                FileOrDirectory::Directory(dir) => dir,
-                FileOrDirectory::File(_) => return Err(Error::Operation(NOT_FOUND)),
+                FD::Directory(dir) => dir,
+                FD::File(_) => return Err(Error::Operation(NOT_FOUND)),
             }
         }
     }

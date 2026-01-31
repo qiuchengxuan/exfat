@@ -9,16 +9,16 @@ repository = "https://github.com/qiuchengxuan/exfat"
 async-embedded-sdmmc = { version = "0.2", default-features = false, features = ["logging", "linux-spi"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-derive_more = "2.0.1"
+derive_more = "2.0"
 embedded-exfat = { path = "..", features = ["std", "chrono", "extern-datetime-now"] }
 embedded-hal = "1.0"
 env_logger = "0.11"
-heapless = "0.9.1"
+heapless = "0.9"
 log = "0.4"
 mbr-nostd = "0.1"
 pretty-hex = "0.4"
 spidev = "0.7"
-thiserror = "2.0.17"
+thiserror = "2.0"
 
 [[bin]]
 name = "exfat"

@@ -14,10 +14,12 @@ pub(crate) mod types;
 
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::ops::Deref;
 use std::rc::Rc;
 
 use clap::Parser;
 use exfat::error::Error;
+use exfat::io::Block;
 use exfat::io::std::FileIO;
 use exfat::{DateTime, ExFAT};
 
@@ -114,9 +116,10 @@ fn exfat_datetime_now() -> DateTime {
     now.into()
 }
 
-fn action<E: Debug, IO>(io: IO, action: Action) -> Result<(), Error<E>>
+fn action<B, E: Debug, IO>(io: IO, action: Action) -> Result<(), Error<E>>
 where
-    IO: exfat::io::IO<Error = E>,
+    B: Deref<Target = [Block]>,
+    IO: for<'a> exfat::io::IO<Block<'a> = B, Error = E>,
 {
     let mut exfat = ExFAT::new(Rc::new(RefCell::new(io)))?;
     exfat.validate_checksum()?;

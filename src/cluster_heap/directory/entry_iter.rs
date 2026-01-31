@@ -19,7 +19,7 @@ pub struct EntryIter<'a, B, IO> {
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<'a, B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> EntryIter<'a, B, S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'b> io::IO<Block<'b> = B, Error = E>,
 {
     pub async fn new(sectors: &'a mut FileSectors<S>) -> Result<EntryIter<'a, B, S>, Error<E>> {
         let sector_index = sectors.sector_index;

@@ -14,12 +14,19 @@ pub struct Meta {
     pub percent_inuse: u8,
 }
 
+#[cfg(test)]
+impl Default for Meta {
+    fn default() -> Self {
+        Self { size: 4096, num_clusters: 4096, sector_size_shift: 9, percent_inuse: 0 }
+    }
+}
+
 impl Meta {
     #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
     pub(crate) async fn new<B, E, IO, S>(io: S, size: u32) -> Result<Self, Error<E>>
     where
         B: Deref<Target = [Block]>,
-        IO: io::IO<Block<'static> = B, Error = E>,
+        IO: for<'a> io::IO<Block<'a> = B, Error = E>,
         S: Share<Target = IO>,
     {
         let mut io = io.acquire().await.wrap();

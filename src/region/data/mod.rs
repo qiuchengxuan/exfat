@@ -29,18 +29,18 @@ pub(crate) struct UpcaseTable {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct VolumnLabel {
+pub(crate) struct VolumeLabel {
     pub entry_type: RawEntryType,
     pub character_count: u8,
-    pub volumn_label: [LE<u16>; 11],
+    pub volume_label: [LE<u16>; 11],
     _reserved: [u8; 8],
 }
 
-impl Into<heapless::String<22>> for VolumnLabel {
+impl Into<heapless::String<22>> for VolumeLabel {
     fn into(self) -> heapless::String<22> {
         let mut label: heapless::String<22> = heapless::String::new();
         for i in 0..self.character_count {
-            let ch = self.volumn_label[i as usize].to_ne();
+            let ch = self.volume_label[i as usize].to_ne();
             label.push(unsafe { char::from_u32_unchecked(ch as u32) }).ok();
         }
         label

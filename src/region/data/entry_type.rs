@@ -4,9 +4,9 @@ use derive_more::{From, Into};
 pub(crate) enum EntryType {
     AllocationBitmap,
     UpcaseTable,
-    VolumnLabel,
+    VolumeLabel,
     FileDirectory,
-    VolumnGUID,
+    VolumeGuid,
     TexFATPadding,
     StreamExtension,
     Filename,
@@ -19,9 +19,9 @@ impl Into<u8> for EntryType {
         match self {
             Self::AllocationBitmap => 0x1,
             Self::UpcaseTable => 0x2,
-            Self::VolumnLabel => 0x3,
+            Self::VolumeLabel => 0x3,
             Self::FileDirectory => 0x5,
-            Self::VolumnGUID => 0x20,
+            Self::VolumeGuid => 0x20,
             Self::TexFATPadding => 0x21,
             Self::StreamExtension => 0x40,
             Self::Filename => 0x41,
@@ -38,10 +38,10 @@ impl TryFrom<u8> for EntryType {
             // critical primary
             0x1 => Self::AllocationBitmap,
             0x2 => Self::UpcaseTable,
-            0x3 => Self::VolumnLabel,
+            0x3 => Self::VolumeLabel,
             0x5 => Self::FileDirectory,
             // benign primary
-            0x20 => Self::VolumnGUID,
+            0x20 => Self::VolumeGuid,
             0x21 => Self::TexFATPadding,
             // critical secondary
             0x40 => Self::StreamExtension,
