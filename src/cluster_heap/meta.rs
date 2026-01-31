@@ -2,9 +2,9 @@ use core::mem::transmute;
 use core::ops::Deref;
 
 use super::context::Context;
-use super::entryset::EntryID;
+use super::entryset::EntryId;
 use super::metadata::Metadata;
-use crate::cluster_heap::allocation_bitmap::Clusters;
+use crate::cluster_heap::allocation_bitmap::allocate::Clusters;
 use crate::error::{AllocationError, DataError, Error, OperationError};
 use crate::fat;
 use crate::file::{FileOptions, TouchOptions};
@@ -14,11 +14,11 @@ use crate::region::data::entryset::primary::DateTime;
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
 use crate::region::fat::Entry;
 use crate::sync::{Share, Shared};
-use crate::types::ClusterID;
+use crate::types::Cluster;
 
 struct Locator {
     pub fat: fat::Meta,
-    pub cluster: ClusterID,
+    pub cluster: Cluster,
 }
 
 impl Locator {
@@ -42,7 +42,7 @@ pub struct FileSectors<IO> {
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> FileSectors<S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
     pub async fn next(&mut self, sector_index: SectorIndex) -> Result<SectorIndex, Error<E>> {
         let fat_chain = self.metadata.stream_extension.general_secondary_flags.fat_chain();
@@ -76,17 +76,17 @@ pub struct MetaFileDirectory<IO> {
 }
 
 impl<IO> MetaFileDirectory<IO> {
-    pub(crate) fn id(&self) -> EntryID {
+    pub(crate) fn id(&self) -> EntryId {
         let entry_index = &self.sectors.metadata.entry_index;
         let sector = entry_index.sector_index.sector(&self.sectors.fs);
-        EntryID { sector, index: entry_index.index }
+        EntryId { sector, index: entry_index.index }
     }
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> MetaFileDirectory<S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
     pub async fn touch(&mut self, datetime: DateTime, opts: TouchOptions) -> Result<(), Error<E>> {
         let metadata = &mut self.sectors.metadata;
@@ -100,22 +100,22 @@ where
         Ok(())
     }
 
-    pub async fn allocate(&mut self, last: ClusterID, size: u32) -> Result<Clusters, Error<E>> {
+    pub async fn allocate(&mut self, last: Cluster, size: u32) -> Result<Clusters, Error<E>> {
         trace!("Allocate clusters starts from {}", last);
         let flags = self.sectors.metadata.stream_extension.general_secondary_flags;
         if !flags.allocation_possible() {
             return Err(AllocationError::NotPossible.into());
         }
-        let nofrag = if self.options.dont_fragment { Some(last) } else { None };
         let mut context = self.context.acquire().await;
-        let allocation = context.allocation_bitmap.allocate(nofrag, size).await?;
+        let nofrag = self.options.dont_fragment;
+        let allocation = context.allocation_bitmap.allocate(last, size, nofrag).await?;
         let cluster_size = self.sectors.fs.cluster_size() as u64;
         let metadata = &mut self.sectors.metadata;
         if !last.valid() {
-            metadata.stream_extension.first_cluster = u32::from(allocation.base).into();
+            metadata.stream_extension.first_cluster = allocation.start.index().into();
         }
-        let contiguous = last + 1u32 == allocation.base;
-        let chained = last.valid() && (flags.fat_chain() || !contiguous) || allocation.bits > 0;
+        let contiguous = last + 1u32 == allocation.start;
+        let chained = last.valid() && (flags.fat_chain() || !contiguous);
         metadata.stream_extension.general_secondary_flags.set_fat_chain(chained);
         if chained {
             let mut io = self.sectors.io.acquire().await.wrap();
@@ -130,12 +130,11 @@ where
                 }
             }
             let mut last = last;
-            let mut iter = allocation;
-            while let Some(cluster) = iter.next() {
+            for cluster in u32::from(allocation.start)..u32::from(allocation.end) {
                 let sector = self.sectors.fat.fat_sector(last).unwrap();
                 let bytes = u32::to_le_bytes(cluster.into());
                 io.write(sector, self.sectors.fat.offset(last), &bytes).await?;
-                last = cluster;
+                last = cluster.into();
             }
             let sector = self.sectors.fat.fat_sector(last).unwrap();
             let bytes = u32::to_ne_bytes(Entry::Last.into());

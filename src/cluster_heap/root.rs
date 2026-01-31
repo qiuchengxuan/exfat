@@ -23,7 +23,7 @@ use crate::io::{self, Block, Wrap};
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::sync::{Share, Shared};
-use crate::types::ClusterID;
+use crate::types::Cluster;
 
 macro_rules! all_is_some {
     ($($option:expr),+) => ($($option.is_some()) &&+);
@@ -33,16 +33,16 @@ pub struct RootDirectory<IO> {
     meta: MetaFileDirectory<IO>,
     upcase_table_data: Rc<crate::upcase_table::UpcaseTable>,
     upcase_table: region::data::UpcaseTable,
-    volumn_label: Option<heapless::String<22>>,
+    volume_label: Option<heapless::String<22>>,
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> RootDirectory<S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
-    pub(crate) async fn new(io: S, fat: FAT, fs: FS, id: ClusterID) -> Result<Self, Error<E>> {
-        let mut volumn_label: Option<heapless::String<22>> = None;
+    pub(crate) async fn new(io: S, fat: FAT, fs: FS, id: Cluster) -> Result<Self, Error<E>> {
+        let mut volume_label: Option<heapless::String<22>> = None;
         let mut upcase_table: Option<region::data::UpcaseTable> = None;
         let mut allocation_bitmap: Option<region::data::AllocationBitmap> = None;
         let sector_index = SectorIndex::new(id, 0);
@@ -56,15 +56,15 @@ where
                 Ok(EntryType::AllocationBitmap) => {
                     allocation_bitmap = Some(unsafe { mem::transmute(entry) })
                 }
-                Ok(EntryType::VolumnLabel) => {
-                    let label: region::data::VolumnLabel = unsafe { mem::transmute(entry) };
-                    volumn_label = Some(label.into())
+                Ok(EntryType::VolumeLabel) => {
+                    let label: region::data::VolumeLabel = unsafe { mem::transmute(entry) };
+                    volume_label = Some(label.into())
                 }
                 Ok(EntryType::UpcaseTable) => upcase_table = Some(unsafe { mem::transmute(entry) }),
                 _ if raw_type.is_end_of_directory() => break,
                 _ => continue,
             };
-            if all_is_some!(allocation_bitmap, upcase_table, volumn_label) {
+            if all_is_some!(allocation_bitmap, upcase_table, volume_label) {
                 break;
             }
         }
@@ -84,16 +84,16 @@ where
                 opened_entries: OpenedEntries { entries: Vec::with_capacity(4) },
             })
         };
-        let cluster_id = upcase_table.first_cluster.to_ne();
+        let cluster = upcase_table.first_cluster.into();
         let length = upcase_table.data_length.to_ne();
-        debug!("Upcase table found at cluster {} length {}", cluster_id, length);
+        debug!("Upcase table found at cluster {} length {}", cluster, length);
         let mut io = io.acquire().await.wrap();
-        let sector = io.read(SectorIndex::new(cluster_id.into(), 0).sector(&fs)).await?;
+        let sector = io.read(SectorIndex::new(cluster, 0).sector(&fs)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let options = FileOptions::default();
         let upcase_table_data = Rc::new((*array).into());
         let meta = MetaFileDirectory { sectors, context, options };
-        Ok(Self { meta, upcase_table_data, upcase_table, volumn_label })
+        Ok(Self { meta, upcase_table_data, upcase_table, volume_label })
     }
 
     /// Traversing allocation bitmap and gather precise usage info
@@ -126,8 +126,8 @@ where
         Ok(())
     }
 
-    pub fn volumn_label(&self) -> Option<&str> {
-        self.volumn_label.as_ref().map(|label| label.as_str())
+    pub fn volume_label(&self) -> Option<&str> {
+        self.volume_label.as_ref().map(|label| label.as_str())
     }
 
     pub async fn open(&mut self) -> Result<Directory<E, IO, S>, Error<E>> {

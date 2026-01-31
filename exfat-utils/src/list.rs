@@ -1,13 +1,16 @@
 use std::fmt::Debug;
+use std::ops::Deref;
 
 use exfat::error::{Error, OperationError};
+use exfat::io::Block;
 
 use crate::filepath::open;
 use crate::types::{FileOrDirectory, Root};
 
-pub fn list<E: Debug, IO>(root: &mut Root<IO>, path: &str) -> Result<(), Error<E>>
+pub fn list<B, E: Debug, IO>(root: &mut Root<IO>, path: &str) -> Result<(), Error<E>>
 where
-    IO: exfat::io::IO<Error = E>,
+    B: Deref<Target = [Block]>,
+    IO: for<'a> exfat::io::IO<Block<'a> = B, Error = E>,
 {
     let mut directory = match open(root.open()?, &path)? {
         FileOrDirectory::File(_) => return Err(OperationError::NotDirectory.into()),

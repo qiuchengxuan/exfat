@@ -1,6 +1,5 @@
 use derive_more::Display;
-use exfat::io::{BLOCK_SIZE, Block};
-use exfat::types::SectorID;
+use exfat::io::{BLOCK_SIZE, Block, Read, Write};
 use mbr_nostd::{MasterBootRecord, PartitionTable};
 use sdmmc::SD;
 use sdmmc::bus::linux::{GPIO, IOError, SPI, SystemClock};
@@ -20,43 +19,39 @@ pub struct SDMMC {
     dirty: bool,
 }
 
-impl exfat::io::IO for SDMMC {
-    type Block<'a> = &'a [Block];
+impl exfat::io::ErrorType for SDMMC {
     type Error = BUSError<std::io::Error, IOError>;
+}
 
-    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
-        if !(self.block_size_shift <= shift && shift <= 12) {
-            panic!("Sector size out of range")
-        }
-        let length = 1 << (shift - self.block_size_shift);
-        unsafe { self.buffer.set_len(length) };
-        Ok(())
-    }
+impl exfat::io::Read for SDMMC {
+    type Block<'a> = heapless::Vec<Block, 4>;
 
-    fn read<'a>(&mut self, id: SectorID) -> Result<&'a [Block], Self::Error> {
-        let address = u64::from(id) * self.buffer.len() as u64;
+    fn read<'a>(&mut self, sector: u64) -> Result<Self::Block<'a>, Self::Error> {
+        let address = sector * self.buffer.len() as u64;
         if address > self.num_blocks {
             panic!("Address out of range")
         }
         if address as u32 == self.address {
-            return Ok(unsafe { &*core::ptr::from_ref(&self.buffer) });
+            return Ok(self.buffer.clone());
         }
         if address as u32 != self.address && self.dirty {
             self.flush()?;
         }
         self.address = address as u32;
         self.sd.read(self.offset + self.address, self.buffer.iter_mut())?;
-        Ok(unsafe { &*core::ptr::from_ref(&self.buffer) })
+        Ok(self.buffer.clone())
     }
+}
 
-    fn write(&mut self, id: SectorID, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
-        let address = u64::from(id) * self.buffer.len() as u64;
+impl exfat::io::Write for SDMMC {
+    fn write(&mut self, sector: u64, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
+        let address = sector * self.buffer.len() as u64;
         if address > self.num_blocks {
             panic!("Address out of range")
         }
         if self.address != address as u32 {
             self.flush()?;
-            self.read(id)?;
+            self.read(sector)?;
             self.address = address as u32;
         }
         let chunk = &mut self.buffer[offset / BLOCK_SIZE];
@@ -70,6 +65,17 @@ impl exfat::io::IO for SDMMC {
             self.sd.write(self.address, self.buffer.iter())?;
             self.dirty = false;
         }
+        Ok(())
+    }
+}
+
+impl exfat::io::IO for SDMMC {
+    fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Self::Error> {
+        if !(self.block_size_shift <= shift && shift <= 12) {
+            panic!("Sector size out of range")
+        }
+        let length = 1 << (shift - self.block_size_shift);
+        unsafe { self.buffer.set_len(length) };
         Ok(())
     }
 }

@@ -23,8 +23,8 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
       - uses: romnn/cargo-feature-combinations@main
-      - name: Run checks
-        run: cargo fc check --fail-fast
+      - run: cargo fc check --fail-fast
+      - run: cd exfat-utils && cargo check
 
   test:
     name: Test

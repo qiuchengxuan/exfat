@@ -9,7 +9,7 @@ use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
 
 #[derive(Copy, Clone, Debug, Display, Eq, Ord, PartialEq, PartialOrd)]
 #[display("{}:{}", sector, index)]
-pub(crate) struct EntryID {
+pub(crate) struct EntryId {
     pub sector: u64,
     pub index: u8, // Max sector size / enty size = 4096 / 32 = 128
 }
@@ -67,8 +67,8 @@ impl EntrySet {
         valid_data_length.to_ne()
     }
 
-    pub(crate) fn id(&self, fs: &fs::Meta) -> EntryID {
+    pub(crate) fn id(&self, fs: &fs::Meta) -> EntryId {
         let sector = self.entry_index.sector_index.sector(fs);
-        EntryID { sector, index: self.entry_index.index }
+        EntryId { sector, index: self.entry_index.index }
     }
 }

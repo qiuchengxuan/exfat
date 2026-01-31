@@ -9,7 +9,7 @@ categories = ["filesystem"]
 license = "MIT"
 description = "ExFAT filesystem library with async support, mainly focusing on embedded system"
 
-[package.metadata.cargo-feature-combinations]
+[package.metadata.cargo-fc]
 exclude_feature_sets = [["smol", "tokio"], ["async", "std"]]
 exclude_features = ["extern-datetime-now", "default"]
 
@@ -19,7 +19,7 @@ chrono = { version = "0.4", optional = true, default-features = false }
 derive_more = { version = "2.0", features = ["display", "from", "into"], default-features = false }
 displaydoc = { version = "0.2", default-features = false }
 heapless = "0.9"
-hex-literal = "1.0"
+hex-literal = "1.1"
 log = { version = "0.4", optional = true }
 maybe-async = { version = "0.2", features = ["is_sync"] }
 memoffset = "0.9"

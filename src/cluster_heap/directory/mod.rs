@@ -21,7 +21,7 @@ use crate::region::data::entryset::primary::{DateTime, FileDirectory, name_hash}
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
 use crate::region::data::entryset::{ENTRY_SIZE, checksum, entries_from_blocks};
 use crate::sync::Share;
-use crate::types::ClusterID;
+use crate::types::Cluster;
 use crate::upcase_table::UpcaseTable;
 pub(crate) use entry_iter::EntryIter;
 
@@ -45,7 +45,7 @@ pub enum FileOrDirectory<E: Debug, IO: io::Write<Error = E>, S: Share<Target = I
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> Directory<E, IO, S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
     async fn walk_matches<F, H, R>(&mut self, f: F, mut h: H) -> Result<Option<R>, Error<E>>
     where
@@ -164,9 +164,9 @@ where
         if !context.opened_entries.add(entryset.id(&self.meta.sectors.fs)) {
             return Err(OperationError::AlreadyOpen.into());
         }
-        let cluster_id = entryset.stream_extension.first_cluster.to_ne();
+        let cluster = entryset.stream_extension.first_cluster.into();
         let file_attributes = entryset.file_directory.file_attributes();
-        let sector_index = SectorIndex::new(cluster_id.into(), 0);
+        let sector_index = SectorIndex::new(cluster, 0);
         let sectors = FileSectors {
             io: self.meta.sectors.io.clone(),
             metadata: Metadata::new(entryset.clone()),
@@ -176,7 +176,7 @@ where
         let context = self.meta.context.clone();
         let meta = MetaFileDirectory { sectors, context, options: FileOptions::default() };
         let (length, capacity) = (meta.sectors.metadata.length(), meta.sectors.metadata.capacity());
-        trace!("Cluster id {} length {} capacity {}", cluster_id, length, capacity);
+        trace!("Cluster {} length {} capacity {}", cluster, length, capacity);
         if file_attributes.directory() > 0 {
             let upcase_table = self.upcase_table.clone();
             Ok(FileOrDirectory::Directory(Directory::new(meta, upcase_table)))
@@ -262,7 +262,7 @@ where
             let sector_index = match self.meta.sectors.next(sector_index).await {
                 Ok(sector_index) => sector_index,
                 Err(Error::Operation(OperationError::EOF)) => {
-                    SectorIndex::new(self.meta.allocate(sector_index.cluster, 1).await?.base, 0)
+                    SectorIndex::new(self.meta.allocate(sector_index.cluster, 1).await?.start, 0)
                 }
                 Err(e) => return Err(e),
             };
@@ -356,7 +356,7 @@ where
         drop(io);
 
         let stream_extension = &meta.stream_extension;
-        let cluster_id: ClusterID = stream_extension.first_cluster.to_ne().into();
+        let cluster_id: Cluster = stream_extension.first_cluster.to_ne().into();
         let fat_chain = meta.stream_extension.general_secondary_flags.fat_chain();
         if cluster_id.valid() {
             let mut context = self.meta.context.acquire().await;
@@ -379,6 +379,7 @@ impl<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> Drop for Directo
     }
     #[cfg(feature = "async")]
     fn drop(&mut self) {
+        // TODO: Use external function to release unclosed directory
         if cfg!(debug_assertions) && !self.closed {
             panic!("Directory at {} not closed", self.meta.sectors.sector_index);
         }

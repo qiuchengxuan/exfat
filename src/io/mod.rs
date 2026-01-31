@@ -1,7 +1,6 @@
 #[cfg(feature = "std")]
 pub mod std;
 
-use core::fmt::Debug;
 use core::ops::{Deref, DerefMut};
 
 use crate::error::Error;
@@ -14,7 +13,7 @@ pub(crate) fn flatten(blocks: &[Block]) -> &[u8] {
 }
 
 pub trait ErrorType {
-    type Error: Debug;
+    type Error;
 }
 
 #[cfg(not(feature = "async"))]
@@ -55,16 +54,16 @@ pub trait IO: Read + Write {
 pub(crate) struct Wrapper<D>(D);
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
-impl<B: Deref<Target = [Block]>, E, T, D> Wrapper<D>
+impl<E, T, D> Wrapper<D>
 where
-    T: IO<Block<'static> = B, Error = E>,
+    T: IO<Error = E>,
     D: DerefMut<Target = T>,
 {
     pub fn set_sector_size_shift(&mut self, shift: u8) -> Result<(), Error<E>> {
         self.0.set_sector_size_shift(shift).map_err(|e| Error::IO(e))
     }
 
-    pub async fn read(&mut self, sector: u64) -> Result<B, Error<E>> {
+    pub async fn read<'a>(&'a mut self, sector: u64) -> Result<<T as Read>::Block<'a>, Error<E>> {
         self.0.read(sector).await.map_err(|e| Error::IO(e))
     }
 
@@ -82,9 +81,9 @@ pub(crate) trait Wrap {
     fn wrap(self) -> Self::Output;
 }
 
-impl<B: Deref<Target = [Block]>, E, T, D> Wrap for D
+impl<E, T, D> Wrap for D
 where
-    T: IO<Block<'static> = B, Error = E>,
+    T: IO<Error = E>,
     D: DerefMut<Target = T>,
 {
     type Output = Wrapper<D>;

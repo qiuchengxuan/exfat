@@ -1,8 +1,8 @@
-use crate::types::ClusterID;
+use crate::types::Cluster;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum Entry {
-    Next(ClusterID),
+    Next(Cluster),
     BadCluster,
     Last,
 }

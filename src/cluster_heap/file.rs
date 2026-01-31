@@ -27,7 +27,7 @@ pub struct File<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> {
 
 impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<E, IO, S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
     pub(crate) fn new(meta: MetaFileDirectory<S>, sector_index: SectorIndex) -> Self {
         let size = meta.sectors.metadata.length();
@@ -71,7 +71,7 @@ impl<E: Debug, IO: io::Write<Error = E>, S: Share<Target = IO>> File<E, IO, S> {
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> File<E, IO, S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
     pub fn size(&self) -> u64 {
         self.size
@@ -162,7 +162,7 @@ where
             return Ok(sector_remain);
         }
         if self.cursor >= capacity {
-            let cluster = self.meta.allocate(self.sector_index.cluster, 1).await?.base;
+            let cluster = self.meta.allocate(self.sector_index.cluster, 1).await?.start;
             self.sector_index = SectorIndex::new(cluster, 0);
             capacity = self.meta.sectors.metadata.capacity();
         }

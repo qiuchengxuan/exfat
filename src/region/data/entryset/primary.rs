@@ -93,9 +93,9 @@ impl FileAttributes {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct UTCOffset(u8);
+pub struct UtcOffset(u8);
 
-impl UTCOffset {
+impl UtcOffset {
     pub fn new(minutes: i16) -> Self {
         Self((minutes / 15) as u8 | 0x80)
     }
@@ -109,7 +109,7 @@ impl UTCOffset {
 }
 
 #[cfg(feature = "chrono")]
-impl core::convert::TryInto<FixedOffset> for UTCOffset {
+impl core::convert::TryInto<FixedOffset> for UtcOffset {
     type Error = ();
     fn try_into(self) -> Result<FixedOffset, Self::Error> {
         FixedOffset::east_opt(self.minutes() as i32 * 60).ok_or(())
@@ -120,7 +120,7 @@ impl core::convert::TryInto<FixedOffset> for UTCOffset {
 pub struct DateTime {
     pub timestamp: Timestamp,
     pub millisecond: u16,
-    pub utc_offset: UTCOffset,
+    pub utc_offset: UtcOffset,
 }
 
 #[cfg(feature = "extern-datetime-now")]
@@ -155,7 +155,7 @@ impl<TZ: chrono::Offset + chrono::TimeZone> From<chrono::DateTime<TZ>> for DateT
     fn from(datetime: chrono::DateTime<TZ>) -> Self {
         let offset = datetime.timezone().fix();
         let seconds = offset.local_minus_utc();
-        let utc_offset = UTCOffset::new((seconds / 60) as i16);
+        let utc_offset = UtcOffset::new((seconds / 60) as i16);
         let naive = datetime.naive_utc();
         let millisecond = naive.and_utc().timestamp_subsec_millis() as u16;
         Self { timestamp: naive.into(), millisecond, utc_offset }
@@ -175,9 +175,9 @@ pub struct FileDirectory {
     last_accessed_timestamp: LE<u32>,
     create_10ms_increment: u8,
     last_modified_10ms_increment: u8,
-    create_utc_offset: UTCOffset,
-    last_modified_utc_offset: UTCOffset,
-    last_accessed_utc_offset: UTCOffset,
+    create_utc_offset: UtcOffset,
+    last_modified_utc_offset: UtcOffset,
+    last_accessed_utc_offset: UtcOffset,
     _reserved2: [u8; 7],
 }
 

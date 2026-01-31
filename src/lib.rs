@@ -52,10 +52,10 @@ pub use cluster_heap::directory::{Directory, FileOrDirectory};
 pub use cluster_heap::file::SeekFrom;
 pub use cluster_heap::root::RootDirectory;
 use cluster_heap::root::RootDirectory as Root;
-use error::{DataError, Error, ImplementationError};
+pub use error::*;
 use io::Wrap;
 pub use region::data::entryset::primary::DateTime;
-use types::ClusterID;
+use types::Cluster;
 
 use crate::io::Block;
 use crate::sync::Share;
@@ -67,13 +67,13 @@ pub struct ExFAT<IO> {
     serial_number: u32,
     fat: fat::Meta,
     fs: fs::Meta,
-    root: ClusterID,
+    root: Cluster,
 }
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E: Debug, IO, S: Share<Target = IO>> ExFAT<S>
 where
-    IO: io::IO<Block<'static> = B, Error = E>,
+    IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
     pub async fn new(io: S) -> Result<Self, Error<E>> {
         let mut wrap_io = io.acquire().await.wrap();
@@ -90,7 +90,7 @@ where
         debug!("FAT offset {} length {}", fat_offset, fat_length);
 
         wrap_io.set_sector_size_shift(boot_sector.bytes_per_sector_shift)?;
-        let root = ClusterID::from(boot_sector.first_cluster_of_root_directory.to_ne());
+        let root = Cluster::from(boot_sector.first_cluster_of_root_directory.to_ne());
         debug!("Root directory on cluster {}", root);
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let fat = fat::Meta::new(sector_size_shift, fat_offset, fat_length);
