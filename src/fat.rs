@@ -1,6 +1,6 @@
 use crate::io::Block;
 use crate::region::fat::Entry;
-use crate::types::{ClusterID, SectorID};
+use crate::types::ClusterID;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Meta {
@@ -19,13 +19,13 @@ impl Meta {
         1 << self.sector_size_shift
     }
 
-    pub fn fat_sector_id(&self, cluster_id: ClusterID) -> Option<SectorID> {
+    pub fn fat_sector(&self, cluster_id: ClusterID) -> Option<u64> {
         let index: u32 = cluster_id.into();
         let sector_index = index / (self.sector_size() / 4);
         if sector_index >= self.length {
             return None;
         }
-        Some(SectorID::from((self.offset + sector_index) as u64))
+        Some((self.offset + sector_index) as u64)
     }
 
     pub fn offset(&self, cluster_id: ClusterID) -> usize {

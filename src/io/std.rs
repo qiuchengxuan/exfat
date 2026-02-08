@@ -16,7 +16,6 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use super::{BLOCK_SIZE, Block};
-use crate::types::SectorID;
 
 #[derive(Debug)]
 pub struct FileIO {
@@ -44,10 +43,9 @@ impl super::ErrorType for FileIO {
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl super::Write for FileIO {
-    async fn write(&mut self, sector: SectorID, offset: usize, buf: &[u8]) -> Result<(), Error> {
+    async fn write(&mut self, sector: u64, offset: usize, buf: &[u8]) -> Result<(), Error> {
         let sector_size = 1 << self.sector_size_shift;
-        let seek = SeekFrom::Start(u64::from(sector) * sector_size + offset as u64);
-        self.file.seek(seek).await?;
+        self.file.seek(SeekFrom::Start(sector * sector_size + offset as u64)).await?;
         self.file.write_all(buf).await.map(|_| ())
     }
 
@@ -60,9 +58,9 @@ impl super::Write for FileIO {
 impl super::Read for FileIO {
     type Block<'a> = heapless::Vec<Block, 8>;
 
-    async fn read<'a>(&mut self, sector: SectorID) -> Result<Self::Block<'a>, Self::Error> {
+    async fn read<'a>(&mut self, sector: u64) -> Result<Self::Block<'a>, Self::Error> {
         let sector_size: usize = 1 << self.sector_size_shift;
-        let seek = SeekFrom::Start(u64::from(sector) * sector_size as u64);
+        let seek = SeekFrom::Start(sector * sector_size as u64);
 
         self.file.seek(seek).await?;
         let mut block = heapless::Vec::<Block, 8>::new();

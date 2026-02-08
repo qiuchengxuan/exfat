@@ -6,12 +6,11 @@ use crate::file::MAX_FILENAME_SIZE;
 use crate::fs::{self, SectorIndex};
 use crate::region::data::entryset::primary::FileDirectory;
 use crate::region::data::entryset::secondary::{Secondary, StreamExtension};
-use crate::types::SectorID;
 
 #[derive(Copy, Clone, Debug, Display, Eq, Ord, PartialEq, PartialOrd)]
-#[display("{}:{}", sector_id, index)]
+#[display("{}:{}", sector, index)]
 pub(crate) struct EntryID {
-    pub sector_id: SectorID,
+    pub sector: u64,
     pub index: u8, // Max sector size / enty size = 4096 / 32 = 128
 }
 
@@ -69,7 +68,7 @@ impl EntrySet {
     }
 
     pub(crate) fn id(&self, fs: &fs::Meta) -> EntryID {
-        let sector_id = self.entry_index.sector_index.id(fs);
-        EntryID { sector_id, index: self.entry_index.index }
+        let sector = self.entry_index.sector_index.sector(fs);
+        EntryID { sector, index: self.entry_index.index }
     }
 }

@@ -23,7 +23,7 @@ use crate::io::{self, Block, Wrap};
 use crate::region;
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::sync::{Share, Shared};
-use crate::types::{ClusterID, SectorID};
+use crate::types::ClusterID;
 
 macro_rules! all_is_some {
     ($($option:expr),+) => ($($option.is_some()) &&+);
@@ -54,17 +54,13 @@ where
             let raw_type = RawEntryType::from(entry[0]);
             match raw_type.entry_type() {
                 Ok(EntryType::AllocationBitmap) => {
-                    let bitmap: &region::data::AllocationBitmap = unsafe { mem::transmute(entry) };
-                    allocation_bitmap = Some(*bitmap)
+                    allocation_bitmap = Some(unsafe { mem::transmute(entry) })
                 }
                 Ok(EntryType::VolumnLabel) => {
-                    let label: &region::data::VolumnLabel = unsafe { mem::transmute(entry) };
-                    volumn_label = Some((*label).into())
+                    let label: region::data::VolumnLabel = unsafe { mem::transmute(entry) };
+                    volumn_label = Some(label.into())
                 }
-                Ok(EntryType::UpcaseTable) => {
-                    let table: &region::data::UpcaseTable = unsafe { mem::transmute(entry) };
-                    upcase_table = Some(*table)
-                }
+                Ok(EntryType::UpcaseTable) => upcase_table = Some(unsafe { mem::transmute(entry) }),
                 _ if raw_type.is_end_of_directory() => break,
                 _ => continue,
             };
@@ -78,7 +74,7 @@ where
             let region = allocation_bitmap.ok_or(DataError::AllocationBitmapMissing)?;
             let first_cluster = region.first_cluster.to_ne();
             let sector_offset = (first_cluster - 2) * fs.sectors_per_cluster();
-            let base = SectorID::from((fs.heap_offset + sector_offset) as u64);
+            let base = (fs.heap_offset + sector_offset) as u64;
             let size = region.data_length.to_ne() as u32;
             debug!("Allocation bitmap found at cluster {} length {}", first_cluster, size);
             let meta = super::allocation_bitmap::Meta::new(io.clone(), size).await?;
@@ -92,7 +88,7 @@ where
         let length = upcase_table.data_length.to_ne();
         debug!("Upcase table found at cluster {} length {}", cluster_id, length);
         let mut io = io.acquire().await.wrap();
-        let sector = io.read(SectorIndex::new(cluster_id.into(), 0).id(&fs)).await?;
+        let sector = io.read(SectorIndex::new(cluster_id.into(), 0).sector(&fs)).await?;
         let array: &[LE<u16>; 128] = unsafe { mem::transmute(&sector[0]) };
         let options = FileOptions::default();
         let upcase_table_data = Rc::new((*array).into());
@@ -109,7 +105,7 @@ where
         let mut checksum = region::data::Checksum::default();
         let first_cluster = self.upcase_table.first_cluster.to_ne();
         let fs = &self.meta.sectors.fs;
-        let first_sector = SectorIndex::new(first_cluster.into(), 0).id(&fs);
+        let first_sector = SectorIndex::new(first_cluster.into(), 0).sector(&fs);
         let data_length = self.upcase_table.data_length.to_ne();
         let sector_size = fs.sector_size();
         let num_sectors = data_length / sector_size as u64;

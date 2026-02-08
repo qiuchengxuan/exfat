@@ -96,11 +96,11 @@ where
         }
         let sector_size = self.meta.sectors.fs.sector_size() as usize;
         let offset = self.cursor as usize % sector_size;
-        let sector_id = self.sector_index.id(&self.meta.sectors.fs);
+        let sector = self.sector_index.sector(&self.meta.sectors.fs);
         let sector_remain = sector_size - offset;
         let mut io = self.meta.sectors.io.acquire().await.wrap();
-        let sector = io.read(sector_id).await?;
-        let bytes = crate::io::flatten(&*sector);
+        let blocks = io.read(sector).await?;
+        let bytes = crate::io::flatten(&blocks);
         if buf.len() <= sector_remain {
             buf.copy_from_slice(&bytes[offset..offset + buf.len()]);
             drop(io);
@@ -116,16 +116,16 @@ where
         self.sector_index = self.meta.sectors.next(self.sector_index).await?;
         for _ in 0..remain.len() / sector_size {
             let mut io = self.meta.sectors.io.acquire().await.wrap();
-            let sector = io.read(sector_id).await?;
-            let bytes = crate::io::flatten(&*sector);
+            let blocks = io.read(sector).await?;
+            let bytes = crate::io::flatten(&blocks);
             remain[..sector_size].copy_from_slice(bytes);
             drop(io);
             self.sector_index = self.meta.sectors.next(self.sector_index).await?;
             remain = &mut remain[sector_size..];
         }
         let mut io = self.meta.sectors.io.acquire().await.wrap();
-        let sector = io.read(sector_id).await?;
-        let bytes = crate::io::flatten(&*sector);
+        let blocks = io.read(sector).await?;
+        let bytes = crate::io::flatten(&blocks);
         remain.copy_from_slice(&bytes[..remain.len()]);
         self.cursor += buf.len() as u64;
         Ok(buf.len())
@@ -150,9 +150,9 @@ where
             let length = core::cmp::min(bytes.len(), sector_remain);
             let chunk = &bytes[..length];
             trace!("Write to sector-ref {}", self.sector_index);
-            let sector_id = self.sector_index.id(&self.meta.sectors.fs);
+            let sector = self.sector_index.sector(&self.meta.sectors.fs);
             let mut io = self.meta.sectors.io.acquire().await.wrap();
-            io.write(sector_id, self.cursor as usize % sector_size, chunk).await?;
+            io.write(sector, self.cursor as usize % sector_size, chunk).await?;
             drop(io);
             self.cursor += length as u64;
             self.size = core::cmp::max(self.cursor, self.size);
@@ -167,10 +167,10 @@ where
             capacity = self.meta.sectors.metadata.capacity();
         }
         trace!("Write to sector-ref {}", self.sector_index);
-        let sector_id = self.sector_index.id(&self.meta.sectors.fs);
+        let sector = self.sector_index.sector(&self.meta.sectors.fs);
         let length = core::cmp::min(bytes.len(), sector_size);
         let chunk = &bytes[..length];
-        self.meta.sectors.io.acquire().await.wrap().write(sector_id, 0, chunk).await?;
+        self.meta.sectors.io.acquire().await.wrap().write(sector, 0, chunk).await?;
         self.cursor += length as u64;
         self.size = core::cmp::max(self.cursor, self.size);
         if length == sector_size && self.cursor < capacity {

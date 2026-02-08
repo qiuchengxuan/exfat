@@ -19,7 +19,7 @@ use crate::io::{self, Block, Wrap};
 use crate::region::data::entry_type::{EntryType, RawEntryType};
 use crate::region::data::entryset::primary::{DateTime, FileDirectory, name_hash};
 use crate::region::data::entryset::secondary::{Filename, Secondary, StreamExtension};
-use crate::region::data::entryset::{ENTRY_SIZE, RawEntry, checksum};
+use crate::region::data::entryset::{ENTRY_SIZE, checksum, entries_from_blocks};
 use crate::sync::Share;
 use crate::types::ClusterID;
 use crate::upcase_table::UpcaseTable;
@@ -66,14 +66,14 @@ where
                     return Err(DataError::Metadata.into());
                 }
             };
-            file_directory = unsafe { mem::transmute(*entry) };
+            file_directory = unsafe { mem::transmute(entry) };
             if file_directory.secondary_count < 2 {
                 return Err(DataError::Metadata.into());
             }
             let entryset_sector_index = iter.sector_index;
             let entryset_index = iter.index;
             let entry = iter.next().await?.unwrap();
-            stream_extension = unsafe { mem::transmute(*entry) };
+            stream_extension = unsafe { mem::transmute(entry) };
             if !f(&file_directory, &stream_extension) {
                 iter.skip(file_directory.secondary_count - 2).await?;
                 continue;
@@ -84,7 +84,7 @@ where
                 if cfg!(feature = "max-filename-size-30") && (i + 1) * 15 > array.len() {
                     continue;
                 }
-                let entry: &Filename = unsafe { mem::transmute(iter.next().await?.unwrap()) };
+                let entry: Filename = unsafe { mem::transmute(iter.next().await?.unwrap()) };
                 let slice = &unsafe { entry.filename.assume_init_ref() }[..];
                 array[i * 15..(i + 1) * 15].copy_from_slice(slice);
             }
@@ -197,9 +197,8 @@ where
 
         loop {
             let mut io = self.meta.sectors.io.acquire().await.wrap();
-            let sector = io.read(sector_index.id(&self.meta.sectors.fs)).await?;
-            let entries: &[[RawEntry; 16]] = unsafe { mem::transmute(&*sector) };
-            for (i, entry) in entries.iter().map(|e| e.iter()).flatten().enumerate() {
+            let blocks = io.read(sector_index.sector(&self.meta.sectors.fs)).await?;
+            for (i, entry) in entries_from_blocks(&blocks).iter().enumerate() {
                 if skip > 0 {
                     skip -= 1;
                     continue;
@@ -278,13 +277,13 @@ where
         let sum = checksum(&file_directory, &stream_extension, name);
         file_directory.set_checksum = sum.into();
 
-        let sector_id = write_entry_index.sector_index.id(&self.meta.sectors.fs);
+        let sector = write_entry_index.sector_index.sector(&self.meta.sectors.fs);
         let offset = write_entry_index.index as usize * ENTRY_SIZE;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&file_directory) };
         let mut io = self.meta.sectors.io.acquire().await.wrap();
-        io.write(sector_id, offset, bytes).await?;
+        io.write(sector, offset, bytes).await?;
         let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&stream_extension) };
-        io.write(sector_id, offset + ENTRY_SIZE, bytes).await?;
+        io.write(sector, offset + ENTRY_SIZE, bytes).await?;
 
         let mut chars = name.chars();
         let mut filename = Filename::default();
@@ -294,18 +293,18 @@ where
                 buf[i] = u16::to_le(chars.next().unwrap_or('\0') as u16)
             }
             let bytes: &[u8; ENTRY_SIZE] = unsafe { mem::transmute(&filename) };
-            io.write(sector_id, offset + index * ENTRY_SIZE, bytes).await?;
+            io.write(sector, offset + index * ENTRY_SIZE, bytes).await?;
         }
         if tail {
             let offset = offset + (num_entries as usize + 2) * ENTRY_SIZE;
-            io.write(sector_id, offset, &[0]).await?;
+            io.write(sector, offset, &[0]).await?;
         };
         // Fill free entries afterwards to avoid corrupting metadata
         if out_of_capacity {
-            let sector_id = sector_index.id(&self.meta.sectors.fs);
+            let sector = sector_index.sector(&self.meta.sectors.fs);
             let byte: u8 = RawEntryType::new(EntryType::Filename, false).into();
             for i in free_entry_index.index as usize..(sector_size / ENTRY_SIZE) {
-                io.write(sector_id, i * ENTRY_SIZE, &[byte]).await?;
+                io.write(sector, i * ENTRY_SIZE, &[byte]).await?;
             }
         }
         io.flush().await
@@ -330,29 +329,29 @@ where
         };
 
         let fs_info = self.meta.sectors.fs;
-        let mut sector_id = meta.entry_index.sector_index.id(&fs_info);
+        let mut sector = meta.entry_index.sector_index.sector(&fs_info);
         let secondary_count = meta.file_directory.secondary_count as usize;
         let last_index = meta.entry_index.index as usize + secondary_count;
         let sector_size = fs_info.sector_size() as usize;
-        let next_sector_id = match last_index * ENTRY_SIZE > sector_size {
-            true => self.meta.sectors.next(meta.entry_index.sector_index).await?.id(&fs_info),
-            false => sector_id,
+        let next_sector = match last_index * ENTRY_SIZE > sector_size {
+            true => self.meta.sectors.next(meta.entry_index.sector_index).await?.sector(&fs_info),
+            false => sector,
         };
 
         let mut offset = meta.entry_index.index as usize * ENTRY_SIZE;
         let mut io = self.meta.sectors.io.acquire().await.wrap();
-        io.write(sector_id, offset, &[EntryType::FileDirectory.into(); 1]).await?;
+        io.write(sector, offset, &[EntryType::FileDirectory.into(); 1]).await?;
         offset = (offset + ENTRY_SIZE) % sector_size;
         if offset == 0 {
-            sector_id = next_sector_id;
+            sector = next_sector;
         }
-        io.write(sector_id, offset, &[EntryType::StreamExtension.into(); 1]).await?;
+        io.write(sector, offset, &[EntryType::StreamExtension.into(); 1]).await?;
         for _ in 0..(secondary_count - 1) {
             offset = (offset + ENTRY_SIZE) % sector_size;
             if offset == 0 {
-                sector_id = next_sector_id;
+                sector = next_sector;
             }
-            io.write(sector_id, offset, &[EntryType::Filename.into(); 1]).await?;
+            io.write(sector, offset, &[EntryType::Filename.into(); 1]).await?;
         }
         drop(io);
 
