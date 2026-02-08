@@ -1,6 +1,6 @@
 use derive_more::Display;
 
-use crate::types::{ClusterID, SectorID};
+use crate::types::ClusterID;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Meta {
@@ -28,30 +28,30 @@ impl Meta {
 }
 
 #[derive(Copy, Clone, Debug, Default, Display)]
-#[display("{}:{}", cluster, sector)]
+#[display("{}:{}", cluster, index)]
 pub struct SectorIndex {
     pub cluster: ClusterID,
-    pub sector: u32,
+    pub index: u32,
 }
 
 impl SectorIndex {
-    pub fn id(&self, meta: &Meta) -> SectorID {
+    pub fn sector(&self, meta: &Meta) -> u64 {
         let index: u32 = self.cluster.into();
         if index == 0 {
-            return SectorID::BOOT; // root directory metadata
+            return crate::BOOT_SECTOR; // root directory metadata
         }
         let num_sectors = (index as u64 - 2) * meta.sectors_per_cluster() as u64;
-        SectorID::from(meta.heap_offset as u64 + num_sectors + self.sector as u64)
+        meta.heap_offset as u64 + num_sectors + self.index as u64
     }
 
-    pub fn new(cluster: ClusterID, sector: u32) -> Self {
-        Self { cluster, sector }
+    pub fn new(cluster: ClusterID, index: u32) -> Self {
+        Self { cluster, index }
     }
 
     pub fn next(&self, sectors_per_cluster: u32) -> Self {
-        if self.sector + 1 > sectors_per_cluster {
-            return Self { cluster: self.cluster + 1u32, sector: 0, ..*self };
+        if self.index + 1 > sectors_per_cluster {
+            return Self { cluster: self.cluster + 1u32, index: 0, ..*self };
         }
-        Self { sector: self.sector + 1, ..*self }
+        Self { index: self.index + 1, ..*self }
     }
 }

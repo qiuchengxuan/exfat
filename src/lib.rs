@@ -59,7 +59,8 @@ use types::ClusterID;
 
 use crate::io::Block;
 use crate::sync::Share;
-use crate::types::SectorID;
+
+pub const BOOT_SECTOR: u64 = 0;
 
 pub struct ExFAT<IO> {
     io: IO,
@@ -76,7 +77,7 @@ where
 {
     pub async fn new(io: S) -> Result<Self, Error<E>> {
         let mut wrap_io = io.acquire().await.wrap();
-        let block = wrap_io.read(SectorID::BOOT).await?;
+        let block = wrap_io.read(BOOT_SECTOR).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&block[0]) };
         if !boot_sector.is_exfat() {
             return Err(DataError::NotExFAT.into());
@@ -106,27 +107,27 @@ where
 
     pub async fn is_dirty(&mut self) -> Result<bool, Error<E>> {
         let mut io = self.io.acquire().await.wrap();
-        let blocks = io.read(SectorID::BOOT).await?;
+        let blocks = io.read(BOOT_SECTOR).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         Ok(boot_sector.volume_flags().volume_dirty() > 0)
     }
 
     pub async fn percent_inuse(&mut self) -> Result<u8, Error<E>> {
         let mut io = self.io.acquire().await.wrap();
-        let blocks = io.read(SectorID::BOOT).await?;
+        let blocks = io.read(BOOT_SECTOR).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&blocks[0]) };
         Ok(boot_sector.percent_inuse)
     }
 
     pub async fn set_dirty(&mut self, dirty: bool) -> Result<(), Error<E>> {
         let mut io = self.io.acquire().await.wrap();
-        let sector = io.read(SectorID::BOOT).await?;
+        let sector = io.read(BOOT_SECTOR).await?;
         let boot_sector: &region::boot::BootSector = unsafe { mem::transmute(&sector[0]) };
         let mut volume_flags = boot_sector.volume_flags();
         volume_flags.set_volume_dirty(dirty as u16);
         let offset = offset_of!(region::boot::BootSector, volume_flags);
         let bytes: [u8; 2] = unsafe { mem::transmute(volume_flags) };
-        io.write(SectorID::BOOT, offset, &bytes).await?;
+        io.write(BOOT_SECTOR, offset, &bytes).await?;
         io.flush().await
     }
 
@@ -134,12 +135,12 @@ where
         let mut io = self.io.acquire().await.wrap();
         let mut checksum = region::boot::BootChecksum::default();
         for i in 0..=10 {
-            let sector = io.read(i.into()).await?;
+            let sector = io.read(i).await?;
             for block in sector.iter() {
                 checksum.write(i as usize, block);
             }
         }
-        let sector = io.read(11.into()).await?;
+        let sector = io.read(11).await?;
         let array: &[u32; 128] = unsafe { core::mem::transmute(&sector[0]) };
         if u32::from_le(array[0]) != checksum.sum() {
             return Err(DataError::BootChecksum.into());

@@ -1,6 +1,6 @@
 use super::meta::Meta;
 use crate::io::Block;
-use crate::types::{ClusterID, SectorID};
+use crate::types::{ClusterID, Sector};
 
 pub struct InSector(u32);
 
@@ -14,13 +14,13 @@ impl InSector {
 #[display("{cluster}")]
 pub struct Locator {
     pub meta: Meta,
-    pub base: SectorID,
+    pub base: Sector,
     pub cluster: ClusterID,
 }
 
 impl Locator {
-    pub fn sector(&self) -> SectorID {
-        self.base + self.cluster.offset() / 8 / self.meta.sector_size()
+    pub fn sector(&self) -> u64 {
+        self.base + (self.cluster.offset() / self.meta.sector_size()) as u64
     }
 
     pub fn in_sector(&self) -> InSector {
@@ -28,16 +28,16 @@ impl Locator {
     }
 
     pub fn out_of_range(&self) -> bool {
-        self.cluster.offset() / 8 >= self.meta.size
+        self.cluster.offset() >= self.meta.size
     }
 
     pub fn bit(&self) -> usize {
-        (self.cluster.offset() % 8) as usize
+        self.cluster.bit() as usize
     }
 
-    pub fn bits(&self, block: &[Block]) -> u8 {
+    pub fn bits(&self, blocks: &[Block]) -> u8 {
         let index = self.in_sector().byte() as usize;
-        block[index / 512][index % 512]
+        crate::io::flatten(blocks)[index]
     }
 
     pub fn is_clear(&self, block: &[Block]) -> Option<u8> {

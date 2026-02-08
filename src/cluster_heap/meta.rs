@@ -14,7 +14,7 @@ use crate::region::data::entryset::primary::DateTime;
 use crate::region::data::entryset::{ENTRY_SIZE, RawEntry};
 use crate::region::fat::Entry;
 use crate::sync::{Share, Shared};
-use crate::types::{ClusterID, SectorID};
+use crate::types::ClusterID;
 
 struct Locator {
     pub fat: fat::Meta,
@@ -26,8 +26,8 @@ impl Locator {
         self.cluster = self.cluster + 1u32;
     }
 
-    fn sector(&self) -> SectorID {
-        self.fat.fat_sector_id(self.cluster).unwrap()
+    fn sector(&self) -> u64 {
+        self.fat.fat_sector(self.cluster).unwrap()
     }
 }
 
@@ -46,7 +46,7 @@ where
 {
     pub async fn next(&mut self, sector_index: SectorIndex) -> Result<SectorIndex, Error<E>> {
         let fat_chain = self.metadata.stream_extension.general_secondary_flags.fat_chain();
-        if sector_index.sector != self.fs.sectors_per_cluster() {
+        if sector_index.index != self.fs.sectors_per_cluster() {
             return Ok(sector_index.next(self.fs.sectors_per_cluster()));
         }
         if !fat_chain {
@@ -58,11 +58,10 @@ where
             return Ok(sector_index.next(self.fs.sectors_per_cluster()));
         }
         let cluster_id = sector_index.cluster;
-        let option = self.fat.fat_sector_id(cluster_id);
-        let sector_id = option.ok_or(Error::Data(DataError::FATChain))?;
+        let sector = self.fat.fat_sector(cluster_id).ok_or(Error::Data(DataError::FATChain))?;
         let mut io = self.io.acquire().await.wrap();
-        let block = io.read(sector_id).await?;
-        match self.fat.next_cluster_id(&block, sector_index.cluster) {
+        let blocks = io.read(sector).await?;
+        match self.fat.next_cluster_id(&blocks, sector_index.cluster) {
             Ok(Entry::Next(cluster_id)) => Ok(SectorIndex::new(cluster_id, 0)),
             Ok(Entry::Last) => Err(OperationError::EOF.into()),
             _ => Err(DataError::FATChain.into()),
@@ -79,8 +78,8 @@ pub struct MetaFileDirectory<IO> {
 impl<IO> MetaFileDirectory<IO> {
     pub(crate) fn id(&self) -> EntryID {
         let entry_index = &self.sectors.metadata.entry_index;
-        let sector_id = entry_index.sector_index.id(&self.sectors.fs);
-        EntryID { sector_id, index: entry_index.index }
+        let sector = entry_index.sector_index.sector(&self.sectors.fs);
+        EntryID { sector, index: entry_index.index }
     }
 }
 
@@ -133,14 +132,14 @@ where
             let mut last = last;
             let mut iter = allocation;
             while let Some(cluster) = iter.next() {
-                let sector_id = self.sectors.fat.fat_sector_id(last).unwrap();
+                let sector = self.sectors.fat.fat_sector(last).unwrap();
                 let bytes = u32::to_le_bytes(cluster.into());
-                io.write(sector_id, self.sectors.fat.offset(last), &bytes).await?;
+                io.write(sector, self.sectors.fat.offset(last), &bytes).await?;
                 last = cluster;
             }
-            let sector_id = self.sectors.fat.fat_sector_id(last).unwrap();
+            let sector = self.sectors.fat.fat_sector(last).unwrap();
             let bytes = u32::to_ne_bytes(Entry::Last.into());
-            io.write(sector_id, self.sectors.fat.offset(last), &bytes).await?;
+            io.write(sector, self.sectors.fat.offset(last), &bytes).await?;
         }
         if metadata.file_directory.file_attributes().directory() > 0 {
             let length = metadata.length() + cluster_size;
@@ -165,18 +164,18 @@ where
         }
         if metadata.dirty {
             trace!("Flush dirty metadata");
-            let mut sector_id = metadata.entry_index.sector_index.id(&self.sectors.fs);
+            let mut sector = metadata.entry_index.sector_index.sector(&self.sectors.fs);
             let bytes: &RawEntry = unsafe { transmute(&metadata.file_directory) };
             let offset = metadata.entry_index.index as usize * ENTRY_SIZE;
             let mut io = self.sectors.io.acquire().await;
-            io.write(sector_id, offset, &bytes[..]).await.map_err(|e| Error::IO(e))?;
+            io.write(sector, offset, &bytes[..]).await.map_err(|e| Error::IO(e))?;
             let mut offset = (metadata.entry_index.index as usize + 1) * ENTRY_SIZE;
             if offset == self.sectors.fs.sector_size() as usize {
                 offset = 0;
-                sector_id += 1u32;
+                sector += 1;
             }
             let bytes: &RawEntry = unsafe { transmute(&metadata.stream_extension) };
-            io.write(sector_id, offset, &bytes[..]).await.map_err(|e| Error::IO(e))?;
+            io.write(sector, offset, &bytes[..]).await.map_err(|e| Error::IO(e))?;
             io.flush().await.map_err(|e| Error::IO(e))?;
             metadata.dirty = false;
         }

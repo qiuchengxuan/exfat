@@ -5,7 +5,6 @@ use crate::error::Error;
 use crate::io::{self, Block, Wrap};
 use crate::region::boot::BootSector;
 use crate::sync::Share;
-use crate::types::SectorID;
 
 #[derive(Copy, Clone)]
 pub struct Meta {
@@ -24,7 +23,7 @@ impl Meta {
         S: Share<Target = IO>,
     {
         let mut io = io.acquire().await.wrap();
-        let blocks = io.read(SectorID::BOOT).await?;
+        let blocks = io.read(crate::BOOT_SECTOR).await?;
         let boot_sector: &BootSector = unsafe { transmute(&blocks[0]) };
         let sector_size_shift = boot_sector.bytes_per_sector_shift;
         let num_clusters = boot_sector.cluster_count.to_ne();
