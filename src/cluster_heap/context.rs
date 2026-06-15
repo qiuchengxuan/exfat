@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use super::{allocation_bitmap::AllocationBitmap, entryset::EntryId};
+use super::{allocation_bitmap::Allocator, entryset::EntryId};
 
 pub struct OpenedEntries {
     pub entries: Vec<EntryId>,
@@ -27,7 +27,7 @@ impl OpenedEntries {
 }
 
 pub struct Context<IO> {
-    pub allocation_bitmap: AllocationBitmap<IO>,
+    pub allocator: Allocator<IO>,
     // Stores first cluster of opened file entry
     pub opened_entries: OpenedEntries,
 }

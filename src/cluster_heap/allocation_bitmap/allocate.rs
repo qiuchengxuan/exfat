@@ -12,14 +12,14 @@ use super::allocator::DumbAllocator;
 use super::bitmap::Bitmap;
 use super::locator::Locator;
 
-pub type Clusters = Range<Cluster>;
+pub type Extent = Range<Cluster>;
 
 #[cfg_attr(not(feature = "async"), maybe_async::must_be_sync)]
 impl<B: Deref<Target = [Block]>, E, IO, S: Share<Target = IO>> DumbAllocator<S>
 where
     IO: for<'a> io::IO<Block<'a> = B, Error = E>,
 {
-    async fn nofrag_allocate(&mut self, base: Locator, size: u32) -> Result<bool, E> {
+    async fn nofrag_find(&mut self, base: Locator, size: u32) -> Result<bool, E> {
         if base.cluster.index() + size > self.meta.num_clusters {
             return Ok(false);
         }
@@ -38,36 +38,17 @@ where
             locator.cluster += n as u32;
             remain -= n;
         }
-
-        let mut remain = size as usize;
-        let mut last = base;
-        while remain > 0 {
-            let block = io.read(last.sector()).await?;
-            let bitmap = Bitmap::new(&block, LittleEndian);
-            let start = last.in_sector() as usize;
-            let n = min(start + remain, clusters_in_sector) - start;
-            for (offset, bits) in bitmap.bits().masking(start..start + n, true) {
-                io.write(last.sector(), offset, &bits.to_le_bytes()).await?;
-            }
-            last.cluster += n as u32;
-            remain -= n;
-        }
         Ok(true)
     }
 
-    /// Best effort allocate in case of frag
-    pub async fn allocate(&mut self, last: Cluster, size: u32, nf: bool) -> Result<Clusters, E> {
+    /// Best effort find in case of frag.
+    pub async fn find(&mut self, last: Cluster, size: u32, nf: bool) -> Result<Extent, E> {
         if self.num_inuse + size > self.meta.num_clusters {
             return Err(AllocationError::NoMoreCluster.into());
         }
         if last.valid() {
             let base = self.locator(last + 1u32);
-            if self.nofrag_allocate(base, size).await? {
-                if self.search_base == last {
-                    self.search_base += size;
-                }
-                self.num_inuse += size;
-                self.ensure_percent_inuse().await?;
+            if self.nofrag_find(base, size).await? {
                 return Ok(base.cluster..base.cluster + size);
             }
             if nf {
@@ -102,9 +83,6 @@ where
             let bitmap = Bitmap::new(&block, LittleEndian);
             let maybe_pos = bitmap.bits().iter().skip(start).take(remain).position(|v| v);
             let end = min(start + maybe_pos.unwrap_or(remain), clusters_in_sector);
-            for (offset, bits) in bitmap.bits().masking(start..end, true) {
-                io.write(last.sector(), offset, &bits.to_le_bytes()).await?;
-            }
             remain -= end - start;
             last.cluster += (end - start) as u32;
             if maybe_pos.is_some() {
@@ -112,13 +90,34 @@ where
             }
         }
         if last.cluster > first {
-            let n = u32::from(last.cluster - first);
-            self.search_base = last.cluster;
-            self.num_inuse += n;
-            drop(io);
-            self.ensure_percent_inuse().await?;
             return Ok(first..last.cluster);
         }
         Err(AllocationError::NoMoreCluster.into())
+    }
+
+    pub async fn allocate(&mut self, extent: Extent) -> Result<(), E> {
+        let clusters_in_sector = self.meta.sector_size() as usize * 8;
+        let mut io = self.io.acquire().await.wrap();
+        let mut locator = self.locator(extent.start);
+        let mut remain = u32::from(extent.end - extent.start) as usize;
+        while remain > 0 {
+            let block = io.read(locator.sector()).await?;
+            let bitmap = Bitmap::new(&block, LittleEndian);
+            let start = locator.in_sector() as usize;
+            let n = min(start + remain, clusters_in_sector) - start;
+            for (offset, bits) in bitmap.bits().masking(start..start + n, true) {
+                io.write(locator.sector(), offset, &bits.to_le_bytes()).await?;
+            }
+            locator.cluster += n as u32;
+            remain -= n;
+        }
+
+        let n = u32::from(extent.end - extent.start);
+        if extent.start <= self.search_base && self.search_base <= extent.end {
+            self.search_base = extent.end;
+        }
+        self.num_inuse += n;
+        drop(io);
+        self.ensure_percent_inuse().await
     }
 }

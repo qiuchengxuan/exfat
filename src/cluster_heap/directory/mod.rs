@@ -360,7 +360,7 @@ where
         let fat_chain = meta.stream_extension.general_secondary_flags.fat_chain();
         if cluster_id.valid() {
             let mut context = self.meta.context.acquire().await;
-            context.allocation_bitmap.release(cluster_id, fat_chain).await?;
+            context.allocator.release(cluster_id, fat_chain).await?;
         }
         self.meta.sectors.io.acquire().await.wrap().flush().await
     }
