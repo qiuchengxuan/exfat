@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use super::directory::Directory;
 use super::metadata::Metadata;
 use super::{
-    allocation_bitmap::AllocationBitmap,
+    allocation_bitmap::Allocator,
     context::{Context, OpenedEntries},
     meta::MetaFileDirectory,
 };
@@ -78,11 +78,9 @@ where
             let size = region.data_length.to_ne() as u32;
             debug!("Allocation bitmap found at cluster {} length {}", first_cluster, size);
             let meta = super::allocation_bitmap::Meta::new(io.clone(), size).await?;
-            let bitmap = AllocationBitmap::new(io.clone(), base, fat, meta).await;
-            Shared::new(Context {
-                allocation_bitmap: bitmap,
-                opened_entries: OpenedEntries { entries: Vec::with_capacity(4) },
-            })
+            let allocator = Allocator::new(io.clone(), base, fat, meta).await;
+            let opened_entries = OpenedEntries { entries: Vec::with_capacity(4) };
+            Shared::new(Context { allocator, opened_entries })
         };
         let cluster = upcase_table.first_cluster.into();
         let length = upcase_table.data_length.to_ne();
@@ -98,7 +96,7 @@ where
 
     /// Traversing allocation bitmap and gather precise usage info
     pub async fn update_usage(&mut self) -> Result<(), Error<E>> {
-        self.meta.context.acquire().await.allocation_bitmap.update_usage().await
+        self.meta.context.acquire().await.allocator.update_usage().await
     }
 
     pub async fn validate_upcase_table_checksum(&mut self) -> Result<(), Error<E>> {

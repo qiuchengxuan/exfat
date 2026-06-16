@@ -7,10 +7,10 @@
 and 12B for root directory.
 
 For async scenario, enable `tokio` feature if std library available
-otherwide enable `async` feature
+otherwise enable `async` feature
 
 For `no_std` scenario, be aware that thread safety is provided by spin crate,
-which potenitally leads to dead lock.
+which potentially leads to dead lock.
 
 ## Using this crate
 

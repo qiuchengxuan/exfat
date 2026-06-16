@@ -4,7 +4,7 @@ use core::ops::Deref;
 use super::context::Context;
 use super::entryset::EntryId;
 use super::metadata::Metadata;
-use crate::cluster_heap::allocation_bitmap::allocate::Clusters;
+use crate::cluster_heap::allocation_bitmap::allocate::Extent;
 use crate::error::{AllocationError, DataError, Error, OperationError};
 use crate::fat;
 use crate::file::{FileOptions, TouchOptions};
@@ -100,7 +100,7 @@ where
         Ok(())
     }
 
-    pub async fn allocate(&mut self, last: Cluster, size: u32) -> Result<Clusters, Error<E>> {
+    pub async fn allocate(&mut self, last: Cluster, size: u32) -> Result<Extent, Error<E>> {
         trace!("Allocate clusters starts from {}", last);
         let flags = self.sectors.metadata.stream_extension.general_secondary_flags;
         if !flags.allocation_possible() {
@@ -108,13 +108,13 @@ where
         }
         let mut context = self.context.acquire().await;
         let nofrag = self.options.dont_fragment;
-        let allocation = context.allocation_bitmap.allocate(last, size, nofrag).await?;
+        let extent = context.allocator.find(last, size, nofrag).await?;
         let cluster_size = self.sectors.fs.cluster_size() as u64;
         let metadata = &mut self.sectors.metadata;
         if !last.valid() {
-            metadata.stream_extension.first_cluster = allocation.start.index().into();
+            metadata.stream_extension.first_cluster = extent.start.index().into();
         }
-        let contiguous = last + 1u32 == allocation.start;
+        let contiguous = last + 1u32 == extent.start;
         let chained = last.valid() && (flags.fat_chain() || !contiguous);
         metadata.stream_extension.general_secondary_flags.set_fat_chain(chained);
         if chained {
@@ -130,7 +130,7 @@ where
                 }
             }
             let mut last = last;
-            for cluster in u32::from(allocation.start)..u32::from(allocation.end) {
+            for cluster in u32::from(extent.start)..u32::from(extent.end) {
                 let sector = self.sectors.fat.fat_sector(last).unwrap();
                 let bytes = u32::to_le_bytes(cluster.into());
                 io.write(sector, self.sectors.fat.offset(last), &bytes).await?;
@@ -146,7 +146,8 @@ where
         }
         metadata.stream_extension.data_length = (metadata.capacity() + cluster_size).into();
         metadata.update_checksum();
-        Ok(allocation)
+        context.allocator.allocate(extent.clone()).await?;
+        Ok(extent)
     }
 }
 
